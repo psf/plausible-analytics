@@ -76,6 +76,8 @@ COPY --chmod=755 ./rel/docker-entrypoint.sh /entrypoint.sh
 # docker container can be started with arbitrary uid
 RUN mkdir -p /var/lib/plausible && chmod ugo+rw -R /var/lib/plausible
 
+COPY --chmod=444 ./landing/index.html /app/landing/index.html
+
 USER 999
 WORKDIR /app
 ENV LISTEN_IP=0.0.0.0
