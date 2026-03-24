@@ -13,15 +13,25 @@ defmodule Plausible.Auth do
   alias Plausible.RateLimit
   alias Plausible.Teams
 
+  require Logger
+
+  if Mix.env() == :e2e_test do
+    @ip_rate_limit 100_000
+    @user_rate_limit 100_000
+  else
+    @ip_rate_limit 5
+    @user_rate_limit 5
+  end
+
   @rate_limits %{
     login_ip: %{
       prefix: "login:ip",
-      limit: 5,
+      limit: @ip_rate_limit,
       interval: :timer.seconds(60)
     },
     login_user: %{
       prefix: "login:user",
-      limit: 5,
+      limit: @user_rate_limit,
       interval: :timer.seconds(60)
     },
     email_change_user: %{
@@ -52,14 +62,37 @@ defmodule Plausible.Auth do
     end
   end
 
+  @spec log_failed_login_attempt(String.t()) :: :ok
+  def log_failed_login_attempt(message) do
+    if Application.get_env(:plausible, :log_failed_login_attempts) do
+      Logger.warning("[login] #{message}")
+    end
+
+    :ok
+  end
+
   @spec find_user_by(Keyword.t()) :: Auth.User.t() | nil
   def find_user_by(opts) do
     Repo.get_by(Auth.User, opts)
   end
 
-  @spec get_user_by(Keyword.t()) :: {:ok, Auth.User.t()} | {:error, :user_not_found}
-  def get_user_by(opts) do
-    case Repo.get_by(Auth.User, opts) do
+  @spec lookup(String.t()) :: {:ok, Auth.User.t()} | {:error, :user_not_found}
+  def lookup(email) do
+    query =
+      on_ee do
+        from(
+          u in Auth.User,
+          left_join: tm in assoc(u, :team_memberships),
+          on: u.type == :sso and tm.role == :owner,
+          left_join: t in assoc(tm, :team),
+          where: u.email == ^email,
+          where: u.type == :standard or (u.type == :sso and t.setup_complete == true)
+        )
+      else
+        from(u in Auth.User, where: u.email == ^email)
+      end
+
+    case Repo.one(query) do
       %Auth.User{} = user -> {:ok, user}
       nil -> {:error, :user_not_found}
     end
@@ -163,20 +196,43 @@ defmodule Plausible.Auth do
     query =
       from(a in Auth.ApiKey,
         where: a.user_id == ^user.id,
-        order_by: [desc: a.id]
+        order_by: [desc: a.id],
+        select: %{
+          a
+          | type:
+              fragment(
+                "CASE WHEN ? = ANY(?) THEN ? ELSE ? END",
+                "sites:provision:*",
+                a.scopes,
+                "sites_api",
+                "stats_api"
+              )
+        }
       )
       |> scope_api_keys_by_team(team)
 
     Repo.all(query)
   end
 
-  @spec create_api_key(Auth.User.t(), Teams.Team.t(), String.t(), String.t()) ::
+  @spec create_stats_api_key(Auth.User.t(), Teams.Team.t(), String.t(), String.t()) ::
           {:ok, Auth.ApiKey.t()} | {:error, Ecto.Changeset.t() | :upgrade_required}
-  def create_api_key(user, team, name, key) do
+  def create_stats_api_key(user, team, name, key) do
     params = %{name: name, user_id: user.id, key: key}
     changeset = Auth.ApiKey.changeset(%Auth.ApiKey{}, team, params)
 
     with :ok <- Billing.Feature.StatsAPI.check_availability(team) do
+      Repo.insert(changeset)
+    end
+  end
+
+  @spec create_sites_api_key(Auth.User.t(), Teams.Team.t(), String.t(), String.t()) ::
+          {:ok, Auth.ApiKey.t()} | {:error, Ecto.Changeset.t() | :upgrade_required}
+  def create_sites_api_key(user, team, name, key) do
+    params = %{name: name, user_id: user.id, key: key, scopes: ["sites:provision:*"]}
+    changeset = Auth.ApiKey.changeset(%Auth.ApiKey{}, team, params)
+
+    with :ok <- Billing.Feature.StatsAPI.check_availability(team),
+         :ok <- Billing.Feature.SitesAPI.check_availability(team) do
       Repo.insert(changeset)
     end
   end
@@ -191,13 +247,22 @@ defmodule Plausible.Auth do
     end
   end
 
-  @spec find_api_key(String.t(), Keyword.t()) ::
+  @spec find_api_key(String.t()) ::
+          {:ok, %{api_key: Auth.ApiKey.t(), team: Teams.Team.t() | nil}}
+          | {:error, :invalid_api_key}
+  def find_api_key(raw_key) do
+    find_api_key(raw_key, nil, nil)
+  end
+
+  @spec find_api_key_for_team_of_site(String.t(), String.t() | nil) ::
           {:ok, %{api_key: Auth.ApiKey.t(), team: Teams.Team.t() | nil}}
           | {:error, :invalid_api_key | :missing_site_id}
-  def find_api_key(raw_key, opts \\ []) do
-    {team_scope, id} = Keyword.get(opts, :team_by, {nil, nil})
+  def find_api_key_for_team_of_site(_raw_key, site_domain) when site_domain in [nil, ""] do
+    {:error, :missing_site_id}
+  end
 
-    find_api_key(raw_key, team_scope, id)
+  def find_api_key_for_team_of_site(raw_key, site_domain) do
+    find_api_key(raw_key, :site, site_domain)
   end
 
   defp scope_api_keys_by_team(query, nil) do
@@ -251,7 +316,7 @@ defmodule Plausible.Auth do
 
   defp find_team_by_site(domain) do
     Repo.one(
-      from s in Plausible.Site,
+      from s in Plausible.Site.regular(),
         inner_join: t in assoc(s, :team),
         where: s.domain == ^domain or s.domain_changed_from == ^domain,
         select: t

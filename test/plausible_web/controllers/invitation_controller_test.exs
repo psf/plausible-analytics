@@ -1,7 +1,6 @@
 defmodule PlausibleWeb.Site.InvitationControllerTest do
   use PlausibleWeb.ConnCase, async: true
   use Plausible.Repo
-  use Plausible.Teams.Test
   use Bamboo.Test
 
   alias Plausible.Teams
@@ -21,7 +20,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
       assert Phoenix.Flash.get(conn.assigns.flash, :success) ==
                "You now have access to #{site.domain}"
 
-      assert redirected_to(conn) == "/#{URI.encode_www_form(site.domain)}"
+      assert redirected_to(conn) == "/#{URI.encode_www_form(site.domain)}/"
 
       refute Repo.exists?(from(i in Plausible.Teams.Invitation, where: i.email == ^user.email))
 
@@ -41,7 +40,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
       assert Phoenix.Flash.get(conn.assigns.flash, :success) ==
                "You now have access to \"#{team.name}\" team"
 
-      assert redirected_to(conn) == "/sites"
+      assert redirected_to(conn) == "/sites?__team=#{team.identifier}"
 
       refute Repo.get_by(Teams.Invitation, email: user.email)
 
@@ -54,7 +53,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
       invitation = invite_guest(site, user.email, role: :editor, inviter: owner)
 
       c1 = post(conn, "/sites/invitations/#{invitation.invitation_id}/accept")
-      assert redirected_to(c1) == "/#{URI.encode_www_form(site.domain)}"
+      assert redirected_to(c1) == "/#{URI.encode_www_form(site.domain)}/"
 
       assert Phoenix.Flash.get(c1.assigns.flash, :success) ==
                "You now have access to #{site.domain}"
@@ -79,7 +78,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
 
       conn = post(conn, "/sites/invitations/#{transfer.transfer_id}/accept")
 
-      assert redirected_to(conn, 302) == "/#{URI.encode_www_form(site.domain)}"
+      assert redirected_to(conn, 302) == "/#{URI.encode_www_form(site.domain)}/"
 
       assert Phoenix.Flash.get(conn.assigns.flash, :success) =~
                "You now have access to"
@@ -141,7 +140,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
 
       conn = post(conn, "/sites/invitations/#{transfer.transfer_id}/accept")
 
-      assert redirected_to(conn, 302) == "/#{URI.encode_www_form(site.domain)}"
+      assert redirected_to(conn, 302) == "/#{URI.encode_www_form(site.domain)}/"
 
       assert Phoenix.Flash.get(conn.assigns.flash, :success) =~
                "You now have access to"

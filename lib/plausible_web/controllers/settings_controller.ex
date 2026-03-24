@@ -1,21 +1,31 @@
 defmodule PlausibleWeb.SettingsController do
   use PlausibleWeb, :controller
+  use Plausible
   use Plausible.Repo
 
   alias Plausible.Auth
-  alias PlausibleWeb.UserAuth
   alias Plausible.Teams
 
   require Logger
 
   plug Plausible.Plugs.AuthorizeTeamAccess,
-       [:owner, :admin] when action in [:update_team_name]
+       [:owner, :admin]
+       when action in [:update_team_name]
 
   plug Plausible.Plugs.AuthorizeTeamAccess,
-       [:owner, :admin, :billing] when action in [:invoices]
+       [:owner, :billing] when action in [:subscription]
 
   plug Plausible.Plugs.AuthorizeTeamAccess,
-       [:owner] when action in [:team_danger_zone, :delete_team]
+       [:owner]
+       when action in [
+              :team_danger_zone,
+              :delete_team,
+              :enable_team_force_2fa,
+              :disable_team_force_2fa
+            ]
+
+  plug Plausible.Plugs.RestrictUserType,
+       [deny: :sso] when action in [:update_name, :update_email, :update_password]
 
   def index(conn, _params) do
     redirect(conn, to: Routes.settings_path(conn, :preferences))
@@ -26,7 +36,7 @@ defmodule PlausibleWeb.SettingsController do
   end
 
   def update_team_name(conn, %{"team" => params}) do
-    changeset = Plausible.Teams.Team.name_changeset(conn.assigns.current_team, params)
+    changeset = Teams.Team.name_changeset(conn.assigns.current_team, params)
 
     case Repo.update(changeset) do
       {:ok, _user} ->
@@ -40,22 +50,79 @@ defmodule PlausibleWeb.SettingsController do
   end
 
   defp render_team_general(conn, opts \\ []) do
-    if Plausible.Teams.setup?(conn.assigns.current_team) do
+    if Teams.setup?(conn.assigns.current_team) do
       name_changeset =
         Keyword.get(
           opts,
           :team_name_changeset,
-          Plausible.Teams.Team.name_changeset(conn.assigns.current_team)
+          Teams.Team.name_changeset(conn.assigns.current_team)
         )
 
       render(conn, :team_general,
         team_name_changeset: name_changeset,
+        force_2fa_enabled?: Teams.force_2fa_enabled?(conn.assigns.current_team),
         layout: {PlausibleWeb.LayoutView, :settings},
         connect_live_socket: true
       )
     else
       conn
       |> redirect(to: Routes.site_path(conn, :index))
+    end
+  end
+
+  def enable_team_force_2fa(conn, _params) do
+    team = conn.assigns.current_team
+    user = conn.assigns.current_user
+
+    case Teams.enable_force_2fa(team, user) do
+      {:ok, _} ->
+        conn
+        |> put_flash(:success, "2FA is now required for all team members.")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+
+      {:error, _} ->
+        conn
+        |> put_flash(:error, "Failed to enforce 2FA for all team members.")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+    end
+  end
+
+  def disable_team_force_2fa(conn, %{"password" => password}) do
+    team = conn.assigns.current_team
+    user = conn.assigns.current_user
+
+    case Teams.disable_force_2fa(team, user, password) do
+      {:ok, _} ->
+        conn
+        |> put_flash(:success, "2FA is no longer enforced for team members.")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+
+      {:error, :invalid_password} ->
+        conn
+        |> put_flash(:error, "Incorrect password provided.")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+
+      {:error, _} ->
+        conn
+        |> put_flash(:error, "Failed to disable enforcing 2FA for all team members.")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+    end
+  end
+
+  def leave_team(conn, _params) do
+    case Teams.Memberships.Leave.leave(conn.assigns.current_team, conn.assigns.current_user) do
+      {:ok, _} ->
+        conn
+        |> put_flash(:success, "You have left \"#{Teams.name(conn.assigns.current_team)}\"")
+        |> redirect(to: Routes.site_path(conn, :index, __team: "none"))
+
+      {:error, :only_one_owner} ->
+        conn
+        |> put_flash(:error, "You can't leave as you are the only Owner on the team")
+        |> redirect(to: Routes.settings_path(conn, :team_general))
+
+      {:error, :membership_not_found} ->
+        redirect(conn, to: Routes.site_path(conn, :index, __team: "none"))
     end
   end
 
@@ -67,27 +134,8 @@ defmodule PlausibleWeb.SettingsController do
     render_security(conn)
   end
 
-  def subscription(conn, _params) do
-    team = conn.assigns.current_team
-    subscription = Teams.Billing.get_subscription(team)
-
-    render(conn, :subscription,
-      layout: {PlausibleWeb.LayoutView, :settings},
-      subscription: subscription,
-      pageview_limit: Teams.Billing.monthly_pageview_limit(subscription),
-      pageview_usage: Teams.Billing.monthly_pageview_usage(team),
-      site_usage: Teams.Billing.site_usage(team),
-      site_limit: Teams.Billing.site_limit(team),
-      team_member_limit: Teams.Billing.team_member_limit(team),
-      team_member_usage: Teams.Billing.team_member_usage(team)
-    )
-  end
-
-  def invoices(conn, _params) do
-    subscription = Teams.Billing.get_subscription(conn.assigns.current_team)
-
-    invoices = Plausible.Billing.paddle_api().get_invoices(subscription)
-    render(conn, :invoices, layout: {PlausibleWeb.LayoutView, :settings}, invoices: invoices)
+  def redirect_invoices(conn, _params) do
+    redirect(conn, to: Routes.settings_path(conn, :subscription))
   end
 
   def api_keys(conn, _params) do
@@ -102,23 +150,44 @@ defmodule PlausibleWeb.SettingsController do
   def new_api_key(conn, _params) do
     current_team = conn.assigns[:current_team]
 
-    changeset = Auth.ApiKey.changeset(%Auth.ApiKey{}, current_team, %{})
+    sites_api_enabled? =
+      Plausible.Billing.Feature.SitesAPI.check_availability(current_team) == :ok
 
-    render(conn, "new_api_key.html", changeset: changeset)
+    changeset = Auth.ApiKey.changeset(%Auth.ApiKey{type: "stats_api"}, current_team, %{})
+
+    render(conn, "new_api_key.html", changeset: changeset, sites_api_enabled?: sites_api_enabled?)
   end
 
-  def create_api_key(conn, %{"api_key" => %{"name" => name, "key" => key}}) do
+  def create_api_key(conn, %{"api_key" => %{"name" => name, "key" => key, "type" => type}}) do
     current_user = conn.assigns.current_user
     current_team = conn.assigns.current_team
 
-    case Auth.create_api_key(current_user, current_team, name, key) do
+    sites_api_enabled? =
+      Plausible.Billing.Feature.SitesAPI.check_availability(current_team) == :ok
+
+    api_key_fn =
+      if type == "sites_api" do
+        &Auth.create_sites_api_key/4
+      else
+        &Auth.create_stats_api_key/4
+      end
+
+    case api_key_fn.(current_user, current_team, name, key) do
       {:ok, _api_key} ->
         conn
         |> put_flash(:success, "API key created successfully")
         |> redirect(to: Routes.settings_path(conn, :api_keys) <> "#api-keys")
 
+      {:error, :upgrade_required} ->
+        conn
+        |> put_flash(:error, "Your current subscription plan does not include Sites API access")
+        |> redirect(to: Routes.settings_path(conn, :new_api_key))
+
       {:error, changeset} ->
-        render(conn, "new_api_key.html", changeset: changeset)
+        render(conn, "new_api_key.html",
+          changeset: changeset,
+          sites_api_enabled?: sites_api_enabled?
+        )
     end
   end
 
@@ -272,7 +341,7 @@ defmodule PlausibleWeb.SettingsController do
 
     with :ok <- Auth.rate_limit(:password_change_user, user),
          {:ok, user} <- do_update_password(user, params) do
-      UserAuth.revoke_all_user_sessions(user, except: user_session)
+      Auth.UserSessions.revoke_all(user, except: user_session)
 
       conn
       |> put_flash(:success, "Your password is now changed")
@@ -321,7 +390,7 @@ defmodule PlausibleWeb.SettingsController do
   def delete_session(conn, %{"id" => session_id}) do
     current_user = conn.assigns.current_user
 
-    :ok = UserAuth.revoke_user_session(current_user, session_id)
+    :ok = Auth.UserSessions.revoke_by_id(current_user, session_id)
 
     conn
     |> put_flash(:success, "Session logged out successfully")

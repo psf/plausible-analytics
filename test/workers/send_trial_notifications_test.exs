@@ -2,7 +2,6 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
   use Plausible.DataCase
   use Bamboo.Test
   use Oban.Testing, repo: Plausible.Repo
-  use Plausible.Teams.Test
   alias Plausible.Workers.SendTrialNotifications
 
   test "does not send a notification if user didn't create a site" do
@@ -77,7 +76,7 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       user = new_user(trial_expiry_date: Date.utc_today() |> Date.shift(day: 1))
       site = new_site(owner: user)
       usage = %{total: 3, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       populate_stats(site, [
         build(:pageview),
@@ -88,7 +87,12 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       perform_job(SendTrialNotifications, %{})
 
       assert_delivered_email(
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "tomorrow", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_tomorrow_email(
+          user,
+          site.team,
+          usage,
+          suggested_volume
+        )
       )
     end
 
@@ -96,7 +100,7 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       user = new_user(trial_expiry_date: Date.utc_today())
       site = new_site(owner: user)
       usage = %{total: 3, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       populate_stats(site, [
         build(:pageview),
@@ -107,7 +111,7 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       perform_job(SendTrialNotifications, %{})
 
       assert_delivered_email(
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
       )
     end
 
@@ -115,26 +119,25 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       user = new_user(trial_expiry_date: Date.utc_today())
       site = new_site(owner: user)
       usage = %{total: 9_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~
-               "In the last month, your account has used 9,000 billable pageviews."
+      assert email.html_body =~ "So far, your account has used 9,000 billable pageviews."
     end
 
     test "includes custom event note if user has used custom events" do
       user = new_user(trial_expiry_date: Date.utc_today())
       site = new_site(owner: user)
       usage = %{total: 9_100, custom_events: 100}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
       assert email.html_body =~
-               "In the last month, your account has used 9,100 billable pageviews and custom events in total."
+               "So far, your account has used 9,100 billable pageviews and custom events in total."
     end
 
     test "sends a trial over email the day after the trial ends" do
@@ -175,108 +178,109 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 9_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 10k/mo plan."
+      assert email.html_body =~ "select the 10k pageviews/month plan."
     end
 
     test "suggests 100k/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 90_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 100k/mo plan."
+      assert email.html_body =~ "select the 100k pageviews/month plan."
     end
 
     test "suggests 200k/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 180_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 200k/mo plan."
+      assert email.html_body =~ "select the 200k pageviews/month plan."
     end
 
     test "suggests 500k/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 450_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 500k/mo plan."
+      assert email.html_body =~ "select the 500k pageviews/month plan."
     end
 
     test "suggests 1m/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 900_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 1M/mo plan."
+      assert email.html_body =~ "select the 1M pageviews/month plan."
     end
 
     test "suggests 2m/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 1_800_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 2M/mo plan."
+      assert email.html_body =~ "select the 2M pageviews/month plan."
     end
 
     test "suggests 5m/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 4_500_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 5M/mo plan."
+      assert email.html_body =~ "select the 5M pageviews/month plan."
     end
 
     test "suggests 10m/mo plan" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 9_000_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "we recommend you select a 10M/mo plan."
+      assert email.html_body =~ "select the 10M pageviews/month plan."
     end
 
     test "does not suggest a plan above that" do
       user = new_user()
       site = new_site(owner: user)
       usage = %{total: 20_000_000, custom_events: 0}
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "please reply back to this email to get a quote for your volume"
+      assert email.html_body =~
+               "Please reply to this email and we'll prepare a custom plan for your volume"
     end
 
     test "does not suggest a plan when user is switching to an enterprise plan" do
@@ -284,12 +288,13 @@ defmodule Plausible.Workers.SendTrialNotificationsTest do
       site = new_site(owner: user)
       usage = %{total: 10_000, custom_events: 0}
       subscribe_to_enterprise_plan(user, paddle_plan_id: "enterprise-plan-id")
-      suggested_plan = Plausible.Billing.Plans.suggest(site.team, usage.total)
+      suggested_volume = Plausible.Billing.Plans.suggest_volume(site.team, usage.total)
 
       email =
-        PlausibleWeb.Email.trial_upgrade_email(user, site.team, "today", usage, suggested_plan)
+        PlausibleWeb.Email.trial_ending_today_email(user, site.team, usage, suggested_volume)
 
-      assert email.html_body =~ "please reply back to this email to get a quote for your volume"
+      assert email.html_body =~
+               "Please reply to this email and we'll prepare a custom plan for your volume"
     end
   end
 end

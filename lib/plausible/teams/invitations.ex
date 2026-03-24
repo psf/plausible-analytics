@@ -5,6 +5,7 @@ defmodule Plausible.Teams.Invitations do
 
   import Ecto.Query
 
+  alias Plausible.Auth
   alias Plausible.Billing
   alias Plausible.Repo
   alias Plausible.Teams
@@ -16,6 +17,29 @@ defmodule Plausible.Teams.Invitations do
       {:ok, invitation}
     else
       {:error, :invitation_not_found}
+    end
+  end
+
+  @spec find_by_team_identifier(String.t() | nil, Plausible.Auth.User.t()) ::
+          {:ok, Teams.Invitation.t()} | {:error, :invitation_not_found}
+  def find_by_team_identifier(nil, _user), do: {:error, :invitation_not_found}
+
+  def find_by_team_identifier(team_identifier, user) do
+    invitation_query =
+      from ti in Teams.Invitation,
+        inner_join: inviter in assoc(ti, :inviter),
+        inner_join: team in assoc(ti, :team),
+        where: ti.email == ^user.email,
+        where: team.identifier == ^team_identifier,
+        where: ti.role != :guest,
+        preload: [inviter: inviter, team: team]
+
+    case Repo.one(invitation_query) do
+      nil ->
+        {:error, :invitation_not_found}
+
+      invitation ->
+        {:ok, invitation}
     end
   end
 
@@ -35,7 +59,8 @@ defmodule Plausible.Teams.Invitations do
     end
   end
 
-  def all(%Teams.Team{} = team) do
+  @spec pending_team_invitations_for(Auth.User.t() | Teams.Team.t()) :: [Teams.Invitation.t()]
+  def pending_team_invitations_for(%Teams.Team{} = team) do
     Repo.all(
       from ti in Teams.Invitation,
         inner_join: inviter in assoc(ti, :inviter),
@@ -44,7 +69,7 @@ defmodule Plausible.Teams.Invitations do
     )
   end
 
-  def all(%Plausible.Auth.User{} = user) do
+  def pending_team_invitations_for(%Plausible.Auth.User{} = user) do
     Repo.all(
       from ti in Teams.Invitation,
         inner_join: inviter in assoc(ti, :inviter),
@@ -52,6 +77,42 @@ defmodule Plausible.Teams.Invitations do
         where: ti.email == ^user.email,
         where: ti.role != :guest,
         preload: [inviter: inviter, team: team]
+    )
+  end
+
+  @spec pending_guest_invitations_for(Auth.User.t()) :: [Teams.GuestInvitation.t()]
+  def pending_guest_invitations_for(%Plausible.Auth.User{} = user) do
+    Repo.all(
+      from gi in Teams.GuestInvitation,
+        inner_join: ti in assoc(gi, :team_invitation),
+        as: :team_invitation,
+        inner_join: inviter in assoc(ti, :inviter),
+        inner_join: s in assoc(gi, :site),
+        as: :site,
+        where: ti.email == ^user.email,
+        where:
+          not exists(
+            from tm in Teams.Membership,
+              inner_join: u in assoc(tm, :user),
+              left_join: gm in assoc(tm, :guest_memberships),
+              on: gm.site_id == parent_as(:site).id,
+              where: tm.team_id == parent_as(:team_invitation).team_id,
+              where: u.email == ^user.email,
+              where: not is_nil(gm.id) or tm.role != :guest,
+              select: 1
+          ),
+        preload: [site: s, team_invitation: {ti, inviter: inviter}]
+    )
+  end
+
+  @spec pending_site_transfers_for(Auth.User.t()) :: [Teams.SiteTransfer.t()]
+  def pending_site_transfers_for(%Plausible.Auth.User{} = user) do
+    Repo.all(
+      from st in Teams.SiteTransfer,
+        inner_join: s in assoc(st, :site),
+        inner_join: initiator in assoc(st, :initiator),
+        where: st.email == ^user.email,
+        preload: [site: s, initiator: initiator]
     )
   end
 
@@ -228,7 +289,11 @@ defmodule Plausible.Teams.Invitations do
     team_invitation = Repo.preload(team_invitation, [:team, :inviter])
     now = NaiveDateTime.utc_now(:second)
 
-    do_accept(team_invitation, user, now, guest_invitations: [])
+    if Plausible.Users.type(user) == :sso do
+      {:error, :permission_denied}
+    else
+      do_accept(team_invitation, user, now, guest_invitations: [])
+    end
   end
 
   @doc false
@@ -410,7 +475,9 @@ defmodule Plausible.Teams.Invitations do
     end
 
     on_ee do
-      :unlocked = Billing.SiteLocker.update_sites_for(team, send_email?: false)
+      Billing.SiteLocker.update_for(prior_team, send_email?: false)
+      :unlocked = Billing.SiteLocker.update_for(team, send_email?: false)
+      Plausible.ConsolidatedView.reset_if_enabled(prior_team)
     end
 
     :ok
@@ -484,6 +551,18 @@ defmodule Plausible.Teams.Invitations do
     end
   end
 
+  @spec check_can_transfer_site(Teams.Team.t(), Auth.User.t()) ::
+          :ok | {:error, :permission_denied}
+  def check_can_transfer_site(team, user) do
+    case Teams.Memberships.team_role(team, user) do
+      {:ok, role} when role in [:owner, :admin] ->
+        :ok
+
+      _ ->
+        {:error, :permission_denied}
+    end
+  end
+
   @doc false
   def check_invitation_permissions(%Teams.Team{} = team, inviter, invitation_role, opts) do
     check_permissions? = Keyword.get(opts, :check_permissions, true)
@@ -498,7 +577,7 @@ defmodule Plausible.Teams.Invitations do
           :ok
 
         _ ->
-          {:error, :forbidden}
+          {:error, :permission_denied}
       end
     else
       :ok
@@ -514,7 +593,7 @@ defmodule Plausible.Teams.Invitations do
           :ok
 
         _ ->
-          {:error, :forbidden}
+          {:error, :permission_denied}
       end
     else
       :ok
@@ -680,7 +759,7 @@ defmodule Plausible.Teams.Invitations do
 
   @team_role_type Plausible.Teams.Membership.__schema__(:type, :role)
 
-  defp create_team_membership(team, role, user, now) do
+  def create_team_membership(team, role, user, now) do
     conflict_query =
       from(tm in Teams.Membership,
         update: [

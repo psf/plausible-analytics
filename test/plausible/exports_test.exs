@@ -9,12 +9,13 @@ defmodule Plausible.ExportsTest do
     setup [:create_user, :create_site]
 
     test "returns named ecto queries", %{site: site} do
-      queries = Plausible.Exports.export_queries(site.id)
+      queries = Plausible.Exports.export_queries(site)
       assert queries |> Map.values() |> Enum.all?(&match?(%Ecto.Query{}, &1))
 
       assert Map.keys(queries) == [
                "imported_browsers.csv",
                "imported_custom_events.csv",
+               "imported_custom_props.csv",
                "imported_devices.csv",
                "imported_entry_pages.csv",
                "imported_exit_pages.csv",
@@ -28,13 +29,14 @@ defmodule Plausible.ExportsTest do
 
     test "with date range", %{site: site} do
       queries =
-        Plausible.Exports.export_queries(site.id,
+        Plausible.Exports.export_queries(site,
           date_range: Date.range(~D[2023-01-01], ~D[2024-03-12])
         )
 
       assert Map.keys(queries) == [
                "imported_browsers_20230101_20240312.csv",
                "imported_custom_events_20230101_20240312.csv",
+               "imported_custom_props_20230101_20240312.csv",
                "imported_devices_20230101_20240312.csv",
                "imported_entry_pages_20230101_20240312.csv",
                "imported_exit_pages_20230101_20240312.csv",
@@ -47,11 +49,12 @@ defmodule Plausible.ExportsTest do
     end
 
     test "with custom extension", %{site: site} do
-      queries = Plausible.Exports.export_queries(site.id, extname: ".ch")
+      queries = Plausible.Exports.export_queries(site, extname: ".ch")
 
       assert Map.keys(queries) == [
                "imported_browsers.ch",
                "imported_custom_events.ch",
+               "imported_custom_props.ch",
                "imported_devices.ch",
                "imported_entry_pages.ch",
                "imported_exit_pages.ch",
@@ -68,7 +71,7 @@ defmodule Plausible.ExportsTest do
     @describetag :tmp_dir
 
     setup do
-      config = Keyword.replace!(Plausible.ClickhouseRepo.config(), :pool_size, 1)
+      config = Plausible.ClickhouseRepo.get_config_without_ch_query_execution_timeout()
       {:ok, ch: start_supervised!({Ch, config})}
     end
 

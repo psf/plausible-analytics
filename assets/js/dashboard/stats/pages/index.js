@@ -7,19 +7,26 @@ import ListReport from './../reports/list'
 import * as metrics from './../reports/metrics'
 import ImportedQueryUnsupportedWarning from '../imported-query-unsupported-warning'
 import { hasConversionGoalFilter } from '../../util/filters'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import { useSiteContext } from '../../site-context'
 import { entryPagesRoute, exitPagesRoute, topPagesRoute } from '../../router'
+import { ReportLayout } from '../reports/report-layout'
+import { ReportHeader } from '../reports/report-header'
+import { TabButton, TabWrapper } from '../../components/tabs'
+import MoreLink from '../more-link'
+import { MoreLinkState } from '../more-link-state'
 
 function EntryPages({ afterFetchData }) {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const site = useSiteContext()
   function fetchData() {
-    return api.get(url.apiPath(site, '/entry-pages'), query, { limit: 9 })
+    return api.get(url.apiPath(site, '/entry-pages'), dashboardState, {
+      limit: 9
+    })
   }
 
   function getExternalLinkUrl(page) {
-    return url.externalLinkForPage(site.domain, page.name)
+    return url.externalLinkForPage(site, page.name)
   }
 
   function getFilterInfo(listItem) {
@@ -32,11 +39,13 @@ function EntryPages({ afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({
-        defaultLabel: 'Unique Entrances',
+        defaultLabel: 'Unique entrances',
         width: 'w-36',
         meta: { plot: true }
       }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -47,25 +56,23 @@ function EntryPages({ afterFetchData }) {
       getFilterInfo={getFilterInfo}
       keyLabel="Entry page"
       metrics={chooseMetrics()}
-      detailsLinkProps={{
-        path: entryPagesRoute.path,
-        search: (search) => search
-      }}
       getExternalLinkUrl={getExternalLinkUrl}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
 }
 
 function ExitPages({ afterFetchData }) {
   const site = useSiteContext()
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   function fetchData() {
-    return api.get(url.apiPath(site, '/exit-pages'), query, { limit: 9 })
+    return api.get(url.apiPath(site, '/exit-pages'), dashboardState, {
+      limit: 9
+    })
   }
 
   function getExternalLinkUrl(page) {
-    return url.externalLinkForPage(site.domain, page.name)
+    return url.externalLinkForPage(site, page.name)
   }
 
   function getFilterInfo(listItem) {
@@ -78,11 +85,13 @@ function ExitPages({ afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({
-        defaultLabel: 'Unique Exits',
+        defaultLabel: 'Unique exits',
         width: 'w-36',
         meta: { plot: true }
       }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -93,25 +102,21 @@ function ExitPages({ afterFetchData }) {
       getFilterInfo={getFilterInfo}
       keyLabel="Exit page"
       metrics={chooseMetrics()}
-      detailsLinkProps={{
-        path: exitPagesRoute.path,
-        search: (search) => search
-      }}
       getExternalLinkUrl={getExternalLinkUrl}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
 }
 
 function TopPages({ afterFetchData }) {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const site = useSiteContext()
   function fetchData() {
-    return api.get(url.apiPath(site, '/pages'), query, { limit: 9 })
+    return api.get(url.apiPath(site, '/pages'), dashboardState, { limit: 9 })
   }
 
   function getExternalLinkUrl(page) {
-    return url.externalLinkForPage(site.domain, page.name)
+    return url.externalLinkForPage(site, page.name)
   }
 
   function getFilterInfo(listItem) {
@@ -124,7 +129,9 @@ function TopPages({ afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({ meta: { plot: true } }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -135,24 +142,14 @@ function TopPages({ afterFetchData }) {
       getFilterInfo={getFilterInfo}
       keyLabel="Page"
       metrics={chooseMetrics()}
-      detailsLinkProps={{
-        path: topPagesRoute.path,
-        search: (search) => search
-      }}
       getExternalLinkUrl={getExternalLinkUrl}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
 }
 
-const labelFor = {
-  pages: 'Top Pages',
-  'entry-pages': 'Entry Pages',
-  'exit-pages': 'Exit Pages'
-}
-
 export default function Pages() {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const site = useSiteContext()
 
   const tabKey = `pageTab__${site.domain}`
@@ -160,6 +157,7 @@ export default function Pages() {
   const [mode, setMode] = useState(storedTab || 'pages')
   const [loading, setLoading] = useState(true)
   const [skipImportedReason, setSkipImportedReason] = useState(null)
+  const [moreLinkState, setMoreLinkState] = useState(MoreLinkState.LOADING)
 
   function switchTab(mode) {
     storage.setItem(tabKey, mode)
@@ -169,9 +167,38 @@ export default function Pages() {
   function afterFetchData(apiResponse) {
     setLoading(false)
     setSkipImportedReason(apiResponse.skip_imported_reason)
+    if (apiResponse.results && apiResponse.results.length > 0) {
+      setMoreLinkState(MoreLinkState.READY)
+    } else {
+      setMoreLinkState(MoreLinkState.HIDDEN)
+    }
   }
 
-  useEffect(() => setLoading(true), [query, mode])
+  useEffect(() => {
+    setLoading(true)
+    setMoreLinkState(MoreLinkState.LOADING)
+  }, [dashboardState, mode])
+
+  function moreLinkProps() {
+    switch (mode) {
+      case 'entry-pages':
+        return {
+          path: entryPagesRoute.path,
+          search: (search) => search
+        }
+      case 'exit-pages':
+        return {
+          path: exitPagesRoute.path,
+          search: (search) => search
+        }
+      case 'pages':
+      default:
+        return {
+          path: topPagesRoute.path,
+          search: (search) => search
+        }
+    }
+  }
 
   function renderContent() {
     switch (mode) {
@@ -185,48 +212,38 @@ export default function Pages() {
     }
   }
 
-  function renderPill(name, pill) {
-    const isActive = mode === pill
-
-    if (isActive) {
-      return (
-        <button className="inline-block h-5 text-indigo-700 dark:text-indigo-500 font-bold active-prop-heading">
-          {name}
-        </button>
-      )
-    }
-
-    return (
-      <button
-        className="hover:text-indigo-600 cursor-pointer"
-        onClick={() => switchTab(pill)}
-      >
-        {name}
-      </button>
-    )
-  }
-
   return (
-    <div>
-      {/* Header Container */}
-      <div className="w-full flex justify-between">
-        <div className="flex gap-x-1">
-          <h3 className="font-bold dark:text-gray-100">
-            {labelFor[mode] || 'Page Visits'}
-          </h3>
+    <ReportLayout testId="report-pages" className="overflow-x-hidden">
+      <ReportHeader>
+        <div className="flex gap-x-3">
+          <TabWrapper>
+            {[
+              {
+                label: hasConversionGoalFilter(dashboardState)
+                  ? 'Conversion pages'
+                  : 'Top pages',
+                value: 'pages'
+              },
+              { label: 'Entry pages', value: 'entry-pages' },
+              { label: 'Exit pages', value: 'exit-pages' }
+            ].map(({ value, label }) => (
+              <TabButton
+                key={value}
+                active={mode === value}
+                onClick={() => switchTab(value)}
+              >
+                {label}
+              </TabButton>
+            ))}
+          </TabWrapper>
           <ImportedQueryUnsupportedWarning
             loading={loading}
             skipImportedReason={skipImportedReason}
           />
         </div>
-        <div className="flex font-medium text-xs text-gray-500 dark:text-gray-400 space-x-2">
-          {renderPill('Top Pages', 'pages')}
-          {renderPill('Entry Pages', 'entry-pages')}
-          {renderPill('Exit Pages', 'exit-pages')}
-        </div>
-      </div>
-      {/* Main Contents */}
+        <MoreLink state={moreLinkState} linkProps={moreLinkProps()} />
+      </ReportHeader>
       {renderContent()}
-    </div>
+    </ReportLayout>
   )
 }

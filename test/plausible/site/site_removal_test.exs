@@ -1,7 +1,6 @@
 defmodule Plausible.Site.SiteRemovalTest do
   use Plausible.DataCase, async: true
   use Oban.Testing, repo: Plausible.Repo
-  use Plausible.Teams.Test
 
   alias Plausible.Site.Removal
   alias Plausible.Sites
@@ -37,5 +36,54 @@ defmodule Plausible.Site.SiteRemovalTest do
 
     refute Repo.reload(team_membership)
     refute Repo.reload(team_invitation)
+  end
+
+  on_ee do
+    test "site deletion updates team dashboard lock state" do
+      owner = new_user(team: [locked: true])
+      site = new_site(owner: owner)
+      team = site.team
+
+      assert team.locked
+
+      assert {:ok, context} = Removal.run(site)
+      assert context.delete_all == {1, nil}
+      refute Sites.get_by_domain(site.domain)
+
+      refute Repo.reload(team).locked
+    end
+
+    test "site deletion disables consolidated view if need be" do
+      owner = new_user()
+      site = new_site(owner: owner)
+      new_site(owner: owner)
+      team = team_of(owner)
+
+      new_consolidated_view(team)
+      assert Plausible.ConsolidatedView.get(team)
+
+      assert {:ok, _} = Removal.run(site)
+
+      refute Plausible.ConsolidatedView.get(team)
+    end
+
+    test "site deletion keeps consolidated view if there's still regular sites" do
+      owner = new_user()
+      site = new_site(owner: owner)
+
+      # another site
+      new_site(owner: owner)
+      # third site to ensure we still have 2+ after deletion
+      new_site(owner: owner)
+
+      team = team_of(owner)
+
+      new_consolidated_view(team)
+      assert Plausible.ConsolidatedView.get(team)
+
+      assert {:ok, _} = Removal.run(site)
+
+      assert Plausible.ConsolidatedView.get(team)
+    end
   end
 end

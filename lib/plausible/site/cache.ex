@@ -41,12 +41,13 @@ defmodule Plausible.Site.Cache do
 
   @impl true
   def count_all() do
-    Plausible.Repo.aggregate(Site, :count)
+    from(s in Site.regular())
+    |> Plausible.Repo.aggregate(:count)
   end
 
   @impl true
   def base_db_query() do
-    from s in Site,
+    from s in Site.regular(),
       left_join: rg in assoc(s, :revenue_goals),
       inner_join: team in assoc(s, :team),
       select: {
@@ -62,7 +63,7 @@ defmodule Plausible.Site.Cache do
     query = from s in base_db_query(), where: s.domain == ^domain
 
     case Plausible.Repo.one(query) do
-      {_, _, site} -> %Site{site | from_cache?: false}
+      {_, _, site = %Site{}} -> %Site{site | from_cache?: false}
       _any -> nil
     end
   end

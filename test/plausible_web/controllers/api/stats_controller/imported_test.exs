@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.ImportedTest do
   use PlausibleWeb.ConnCase
-  use Timex
 
   @user_id Enum.random(1000..9999)
 
@@ -19,7 +18,7 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
           %{
             source: :google_analytics_4,
             start_date: ~D[2005-01-01],
-            end_date: Timex.today(),
+            end_date: Date.utc_today(),
             legacy: unquote(import_type) == :new_and_legacy
           }
 
@@ -155,6 +154,15 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
           )
         ])
 
+        populate_stats(site, import_id, [
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-31]),
+          build(:imported_visitors, date: ~D[2021-01-31])
+        ])
+
         import_data(
           [
             %{
@@ -281,11 +289,11 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
           |> Enum.sort()
 
         assert results == [
-                 %{"name" => "A Nice Newsletter", "visitors" => 1},
-                 %{"name" => "Direct / None", "visitors" => 1},
-                 %{"name" => "DuckDuckGo", "visitors" => 2},
-                 %{"name" => "Google", "visitors" => 4},
-                 %{"name" => "Twitter", "visitors" => 1}
+                 %{"name" => "A Nice Newsletter", "visitors" => 1, "percentage" => 11.11},
+                 %{"name" => "Direct / None", "visitors" => 1, "percentage" => 11.11},
+                 %{"name" => "DuckDuckGo", "visitors" => 2, "percentage" => 22.22},
+                 %{"name" => "Google", "visitors" => 4, "percentage" => 44.44},
+                 %{"name" => "Twitter", "visitors" => 1, "percentage" => 11.11}
                ]
       end
 
@@ -416,10 +424,10 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
           |> Enum.sort()
 
         assert results == [
-                 %{"name" => "(not set)", "visitors" => 1},
-                 %{"name" => "Direct", "visitors" => 2},
-                 %{"name" => "Organic Search", "visitors" => 3},
-                 %{"name" => "Paid Search", "visitors" => 2}
+                 %{"name" => "(not set)", "visitors" => 1, "percentage" => 33.33},
+                 %{"name" => "Direct", "visitors" => 2, "percentage" => 66.67},
+                 %{"name" => "Organic Search", "visitors" => 3, "percentage" => 100.0},
+                 %{"name" => "Paid Search", "visitors" => 2, "percentage" => 66.67}
                ]
       end
 
@@ -493,8 +501,9 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
                  %{
                    "bounce_rate" => 100.0,
                    "name" => "social",
-                   "visit_duration" => 20,
-                   "visitors" => 3
+                   "visit_duration" => 20.0,
+                   "visitors" => 3,
+                   "percentage" => 100.0
                  }
                ]
       end
@@ -582,13 +591,15 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
                    "name" => "august",
                    "visitors" => 2,
                    "bounce_rate" => 50.0,
-                   "visit_duration" => 50.0
+                   "visit_duration" => 50.0,
+                   "percentage" => 50.0
                  },
                  %{
                    "name" => "profile",
                    "visitors" => 2,
                    "bounce_rate" => 100.0,
-                   "visit_duration" => 50.0
+                   "visit_duration" => 50.0,
+                   "percentage" => 50.0
                  }
                ]
       end
@@ -677,13 +688,15 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
                    "name" => "Sweden",
                    "visitors" => 3,
                    "bounce_rate" => 67.0,
-                   "visit_duration" => 33.0
+                   "visit_duration" => 33.0,
+                   "percentage" => 60.0
                  },
                  %{
                    "name" => "oat milk",
                    "visitors" => 2,
                    "bounce_rate" => 100.0,
-                   "visit_duration" => 50.0
+                   "visit_duration" => 50.0,
+                   "percentage" => 40.0
                  }
                ]
       end
@@ -771,13 +784,15 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
                    "name" => "ad",
                    "visitors" => 2,
                    "bounce_rate" => 100.0,
-                   "visit_duration" => 50.0
+                   "visit_duration" => 50.0,
+                   "percentage" => 50.0
                  },
                  %{
                    "name" => "blog",
                    "visitors" => 2,
                    "bounce_rate" => 50.0,
-                   "visit_duration" => 50.0
+                   "visit_duration" => 50.0,
+                   "percentage" => 50.0
                  }
                ]
       end
@@ -800,6 +815,13 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
             user_id: @user_id,
             timestamp: ~N[2021-01-01 00:15:00]
           )
+        ])
+
+        populate_stats(site, import_id, [
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01]),
+          build(:imported_visitors, date: ~D[2021-01-01])
         ])
 
         import_data(
@@ -878,12 +900,13 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
 
         assert json_response(conn, 200)["results"] == [
                  %{
-                   "bounce_rate" => 0,
+                   "bounce_rate" => 0.0,
                    "time_on_page" => 60,
                    "visitors" => 3,
                    "pageviews" => 4,
                    "scroll_depth" => nil,
-                   "name" => "/some-other-page"
+                   "name" => "/some-other-page",
+                   "percentage" => 60.0
                  },
                  %{
                    "bounce_rate" => 25.0,
@@ -891,7 +914,8 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
                    "visitors" => 2,
                    "pageviews" => 2,
                    "scroll_depth" => nil,
-                   "name" => "/"
+                   "name" => "/",
+                   "percentage" => 40.0
                  }
                ]
       end
@@ -961,12 +985,19 @@ defmodule PlausibleWeb.Api.StatsController.ImportedTest do
           )
 
         assert json_response(conn, 200)["results"] == [
-                 %{"code" => 588_335, "name" => "Tartu", "visitors" => 1, "country_flag" => "🇪🇪"},
+                 %{
+                   "code" => 588_335,
+                   "name" => "Tartu",
+                   "visitors" => 1,
+                   "country_flag" => "🇪🇪",
+                   "percentage" => 50.0
+                 },
                  %{
                    "code" => 2_650_225,
                    "name" => "Edinburgh",
                    "visitors" => 1,
-                   "country_flag" => "🇬🇧"
+                   "country_flag" => "🇬🇧",
+                   "percentage" => 50.0
                  }
                ]
       end

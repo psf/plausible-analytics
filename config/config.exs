@@ -26,27 +26,25 @@ config :esbuild,
   ]
 
 config :tailwind,
-  version: "3.4.7",
+  version: "4.1.12",
   default: [
     args: ~w(
-      --config=tailwind.config.js
-      --input=css/app.css
-      --output=../priv/static/css/app.css
+      --input=assets/css/app.css
+      --output=priv/static/css/app.css
     ),
-    cd: Path.expand("../assets", __DIR__)
+    cd: Path.expand("..", __DIR__)
   ],
   storybook: [
     args: ~w(
-    --config=tailwind.config.js
-    --input=css/storybook.css
-    --output=../priv/static/css/storybook.css
+    --input=assets/css/storybook.css
+    --output=priv/static/css/storybook.css
   ),
-    cd: Path.expand("../assets", __DIR__)
+    cd: Path.expand("..", __DIR__)
   ]
 
 config :ua_inspector,
   database_path: "priv/ua_inspector",
-  remote_release: "6.3.2"
+  remote_release: "6.5.0"
 
 config :ref_inspector,
   database_path: "priv/ref_inspector"
@@ -89,5 +87,10 @@ config :sentry,
 
 config :prom_ex, :storage_adapter, Plausible.PromEx.StripedPeep
 config :peep, :bucket_calculator, Plausible.PromEx.Buckets
+
+config :plausible, Plausible.Auth.ApiKey,
+  legacy_per_user_hourly_request_limit: 600,
+  burst_request_limit: 60,
+  burst_period_seconds: 10
 
 import_config "#{config_env()}.exs"

@@ -2,10 +2,9 @@ defmodule PlausibleWeb.SettingsControllerTest do
   use PlausibleWeb.ConnCase, async: true
   use Bamboo.Test
   use Plausible.Repo
-  use Plausible.Teams.Test
 
   import Mox
-  import Plausible.Test.Support.HTML
+
   import Ecto.Query
 
   require Plausible.Billing.Subscription.Status
@@ -19,6 +18,15 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
   setup [:verify_on_exit!]
 
+  describe "GET /billing/invoices" do
+    setup [:create_user, :log_in]
+
+    test "redirects to subscription settings", %{conn: conn} do
+      conn = get(conn, Routes.settings_path(conn, :redirect_invoices))
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :subscription)
+    end
+  end
+
   describe "GET /billing/subscription" do
     setup [:create_user, :log_in]
 
@@ -26,24 +34,24 @@ defmodule PlausibleWeb.SettingsControllerTest do
     test "shows subscription", %{conn: conn, user: user} do
       subscribe_to_plan(user, "558018")
       conn = get(conn, Routes.settings_path(conn, :subscription))
-      assert html_response(conn, 200) =~ "10k pageviews"
-      assert html_response(conn, 200) =~ "monthly billing"
+      assert html_response(conn, 200) =~ "10k monthly pageviews"
+      assert html_response(conn, 200) =~ "/ month"
     end
 
     @tag :ee_only
     test "shows yearly subscription", %{conn: conn, user: user} do
       subscribe_to_plan(user, "590752")
       conn = get(conn, Routes.settings_path(conn, :subscription))
-      assert html_response(conn, 200) =~ "100k pageviews"
-      assert html_response(conn, 200) =~ "yearly billing"
+      assert html_response(conn, 200) =~ "100k monthly pageviews"
+      assert html_response(conn, 200) =~ "/ year"
     end
 
     @tag :ee_only
     test "shows free subscription", %{conn: conn, user: user} do
       subscribe_to_plan(user, "free_10k")
       conn = get(conn, Routes.settings_path(conn, :subscription))
-      assert html_response(conn, 200) =~ "10k pageviews"
-      assert html_response(conn, 200) =~ "N/A billing"
+      assert html_response(conn, 200) =~ "10k monthly pageviews"
+      assert html_response(conn, 200) =~ "N/A"
     end
 
     @tag :ee_only
@@ -51,8 +59,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
       configure_enterprise_plan(user)
 
       conn = get(conn, Routes.settings_path(conn, :subscription))
-      assert html_response(conn, 200) =~ "20M pageviews"
-      assert html_response(conn, 200) =~ "yearly billing"
+      assert html_response(conn, 200) =~ "20M monthly pageviews"
+      assert html_response(conn, 200) =~ "/ year"
     end
 
     @tag :ee_only
@@ -70,25 +78,44 @@ defmodule PlausibleWeb.SettingsControllerTest do
       )
 
       conn = get(conn, Routes.settings_path(conn, :subscription))
-      assert html_response(conn, 200) =~ "20M pageviews"
-      assert html_response(conn, 200) =~ "yearly billing"
+      assert html_response(conn, 200) =~ "20M monthly pageviews"
+      assert html_response(conn, 200) =~ "/ year"
     end
 
     @tag :ee_only
-    test "renders two links to '/billing/choose-plan` with the text 'Upgrade'", %{conn: conn} do
+    test "shows trial state without days-left pill when user has no team yet", %{conn: conn} do
       doc =
         conn
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      upgrade_link_1 = find(doc, "#monthly-quota-box a")
-      upgrade_link_2 = find(doc, "#upgrade-link-2")
+      upgrade_link = find(doc, "#upgrade-or-change-plan-link")
 
-      assert text(upgrade_link_1) == "Upgrade"
-      assert text_of_attr(upgrade_link_1, "href") == Routes.billing_path(conn, :choose_plan)
+      assert text(upgrade_link) =~ "Choose a plan"
+      assert text_of_attr(upgrade_link, "href") == Routes.billing_path(conn, :choose_plan)
+      assert doc =~ "Your 30-day trial will start when you add your first site"
+      refute doc =~ "days left"
+    end
 
-      assert text(upgrade_link_2) == "Upgrade"
-      assert text_of_attr(upgrade_link_2, "href") == Routes.billing_path(conn, :choose_plan)
+    @tag :ee_only
+    test "shows trial state with days-left pill when user is on trial", %{conn: conn, user: user} do
+      {:ok, team} = Plausible.Teams.get_or_create(user)
+
+      team
+      |> Ecto.Changeset.change(trial_expiry_date: Date.add(Date.utc_today(), 10))
+      |> Plausible.Repo.update!()
+
+      doc =
+        conn
+        |> get(Routes.settings_path(conn, :subscription))
+        |> html_response(200)
+
+      upgrade_link = find(doc, "#upgrade-or-change-plan-link")
+
+      assert text(upgrade_link) =~ "Choose a plan"
+      assert text_of_attr(upgrade_link, "href") == Routes.billing_path(conn, :choose_plan)
+      assert doc =~ "days left"
+      refute doc =~ "Your 30-day trial will start when you add your first site"
     end
 
     @tag :ee_only
@@ -103,15 +130,15 @@ defmodule PlausibleWeb.SettingsControllerTest do
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      refute element_exists?(doc, "#upgrade-link-2")
-      assert doc =~ "Cancel my subscription"
+      assert doc =~ "Cancel plan"
 
-      change_plan_link = find(doc, "#monthly-quota-box a")
+      change_plan_link = find(doc, "#upgrade-or-change-plan-link")
 
       assert text(change_plan_link) == "Change plan"
       assert text_of_attr(change_plan_link, "href") == Routes.billing_path(conn, :choose_plan)
     end
 
+    @tag :ee_only
     test "/billing/choose-plan link does not show up when enterprise subscription is past_due", %{
       conn: conn,
       user: user
@@ -126,6 +153,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
       refute element_exists?(doc, "#upgrade-or-change-plan-link")
     end
 
+    @tag :ee_only
     test "/billing/choose-plan link does not show up when enterprise subscription is paused", %{
       conn: conn,
       user: user
@@ -141,7 +169,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
     end
 
     @tag :ee_only
-    test "renders two links to '/billing/choose-plan' with the text 'Upgrade' for a configured enterprise plan",
+    test "renders a link to '/billing/choose-plan' with the text 'Upgrade' for a configured enterprise plan",
          %{conn: conn, user: user} do
       subscribe_to_enterprise_plan(user,
         paddle_plan_id: @configured_enterprise_plan_paddle_plan_id,
@@ -155,18 +183,10 @@ defmodule PlausibleWeb.SettingsControllerTest do
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      upgrade_link_1 = find(doc, "#monthly-quota-box a")
-      upgrade_link_2 = find(doc, "#upgrade-link-2")
+      upgrade_link = find(doc, "#upgrade-or-change-plan-link")
 
-      assert text(upgrade_link_1) == "Upgrade"
-
-      assert text_of_attr(upgrade_link_1, "href") ==
-               Routes.billing_path(conn, :choose_plan)
-
-      assert text(upgrade_link_2) == "Upgrade"
-
-      assert text_of_attr(upgrade_link_2, "href") ==
-               Routes.billing_path(conn, :choose_plan)
+      assert text(upgrade_link) == "Upgrade"
+      assert text_of_attr(upgrade_link, "href") == Routes.billing_path(conn, :choose_plan)
     end
 
     @tag :ee_only
@@ -179,10 +199,9 @@ defmodule PlausibleWeb.SettingsControllerTest do
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      refute element_exists?(doc, "#upgrade-link-2")
-      assert doc =~ "Cancel my subscription"
+      assert doc =~ "Cancel plan"
 
-      change_plan_link = find(doc, "#monthly-quota-box a")
+      change_plan_link = find(doc, "#upgrade-or-change-plan-link")
 
       assert text(change_plan_link) == "Change plan"
 
@@ -205,8 +224,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
         |> html_response(200)
         |> text_of_element("#global-subscription-cancelled-notice")
 
-      assert notice_text =~ "Subscription cancelled"
-      assert notice_text =~ "Upgrade your subscription to get access to your stats again"
+      refute notice_text =~ Plausible.Billing.subscription_cancelled_notice_title()
     end
 
     @tag :ee_only
@@ -255,26 +273,37 @@ defmodule PlausibleWeb.SettingsControllerTest do
                "by letting your subscription expire, you lose access to our grandfathered terms"
     end
 
+    @tag :ee_only
     test "does not show invoice section for a user with no subscription", %{conn: conn} do
-      conn = get(conn, Routes.settings_path(conn, :invoices))
-      assert html_response(conn, 200) =~ "No invoices issued yet"
+      html =
+        conn
+        |> get(Routes.settings_path(conn, :subscription))
+        |> html_response(200)
+
+      refute element_exists?(html, "#invoices")
     end
 
     @tag :ee_only
-    test "renders pageview usage for current, last, and penultimate billing cycles", %{
+    test "renders billing cycle usage breakdown", %{
       conn: conn,
       user: user
     } do
       site = new_site(owner: user)
 
       populate_stats(site, [
-        build(:event, name: "pageview", timestamp: Timex.shift(Timex.now(), days: -5)),
-        build(:event, name: "customevent", timestamp: Timex.shift(Timex.now(), days: -20)),
-        build(:event, name: "pageview", timestamp: Timex.shift(Timex.now(), days: -50)),
-        build(:event, name: "customevent", timestamp: Timex.shift(Timex.now(), days: -50))
+        build(:event, name: "pageview", timestamp: DateTime.shift(DateTime.utc_now(), day: -5)),
+        build(:event,
+          name: "customevent",
+          timestamp: DateTime.shift(DateTime.utc_now(), day: -20)
+        ),
+        build(:event, name: "pageview", timestamp: DateTime.shift(DateTime.utc_now(), day: -50)),
+        build(:event,
+          name: "customevent",
+          timestamp: DateTime.shift(DateTime.utc_now(), day: -50)
+        )
       ])
 
-      last_bill_date = Timex.shift(Timex.today(), days: -10)
+      last_bill_date = Date.shift(Date.utc_today(), day: -10)
 
       subscribe_to_plan(user, @v4_plan_id, last_bill_date: last_bill_date, status: :deleted)
 
@@ -283,44 +312,15 @@ defmodule PlausibleWeb.SettingsControllerTest do
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      assert text_of_element(html, "#billing_cycle_tab_current_cycle") =~
-               Date.range(
-                 last_bill_date,
-                 Timex.shift(last_bill_date, months: 1, days: -1)
-               )
+      assert html =~
+               Date.range(last_bill_date, Date.shift(last_bill_date, month: 1, day: -1))
                |> PlausibleWeb.TextHelpers.format_date_range()
-
-      assert text_of_element(html, "#billing_cycle_tab_last_cycle") =~
-               Date.range(
-                 Timex.shift(last_bill_date, months: -1),
-                 Timex.shift(last_bill_date, days: -1)
-               )
-               |> PlausibleWeb.TextHelpers.format_date_range()
-
-      assert text_of_element(html, "#billing_cycle_tab_penultimate_cycle") =~
-               Date.range(
-                 Timex.shift(last_bill_date, months: -2),
-                 Timex.shift(last_bill_date, months: -1, days: -1)
-               )
-               |> PlausibleWeb.TextHelpers.format_date_range()
-
-      assert text_of_element(html, "#total_pageviews_current_cycle") =~
-               "Total billable pageviews 1"
 
       assert text_of_element(html, "#pageviews_current_cycle") =~ "Pageviews 1"
       assert text_of_element(html, "#custom_events_current_cycle") =~ "Custom events 0"
 
-      assert text_of_element(html, "#total_pageviews_last_cycle") =~
-               "Total billable pageviews 1 / 10,000"
-
-      assert text_of_element(html, "#pageviews_last_cycle") =~ "Pageviews 0"
-      assert text_of_element(html, "#custom_events_last_cycle") =~ "Custom events 1"
-
-      assert text_of_element(html, "#total_pageviews_penultimate_cycle") =~
-               "Total billable pageviews 2 / 10,000"
-
-      assert text_of_element(html, "#pageviews_penultimate_cycle") =~ "Pageviews 1"
-      assert text_of_element(html, "#custom_events_penultimate_cycle") =~ "Custom events 1"
+      refute element_exists?(html, "#total_pageviews_last_cycle")
+      refute element_exists?(html, "#total_pageviews_penultimate_cycle")
     end
 
     @tag :ee_only
@@ -332,13 +332,11 @@ defmodule PlausibleWeb.SettingsControllerTest do
         refute element_exists?(doc, "#total_pageviews_last_30_days")
 
         assert element_exists?(doc, "#total_pageviews_current_cycle")
-        assert element_exists?(doc, "#total_pageviews_last_cycle")
-        assert element_exists?(doc, "#total_pageviews_penultimate_cycle")
       end
 
       subscribe_to_plan(user, @v4_plan_id,
         status: :active,
-        last_bill_date: Timex.shift(Timex.now(), months: -6)
+        last_bill_date: Date.shift(Date.utc_today(), month: -6)
       )
 
       subscription =
@@ -366,7 +364,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
       subscription
       |> Plausible.Billing.Subscription.changeset(%{
         status: :deleted,
-        next_bill_date: Timex.shift(Timex.now(), months: 6)
+        next_bill_date: Date.shift(Date.utc_today(), month: 6)
       })
       |> Repo.update!()
 
@@ -374,46 +372,6 @@ defmodule PlausibleWeb.SettingsControllerTest do
       |> get(Routes.settings_path(conn, :subscription))
       |> html_response(200)
       |> assert_cycles_rendered.()
-    end
-
-    @tag :ee_only
-    test "penultimate cycle is disabled if there's no usage", %{conn: conn, user: user} do
-      site = new_site(owner: user)
-
-      populate_stats(site, [
-        build(:event, name: "pageview", timestamp: Timex.shift(Timex.now(), days: -5)),
-        build(:event, name: "customevent", timestamp: Timex.shift(Timex.now(), days: -20))
-      ])
-
-      last_bill_date = Timex.shift(Timex.today(), days: -10)
-
-      subscribe_to_plan(user, @v4_plan_id, last_bill_date: last_bill_date)
-
-      html =
-        conn
-        |> get(Routes.settings_path(conn, :subscription))
-        |> html_response(200)
-
-      assert class_of_element(html, "#billing_cycle_tab_penultimate_cycle button") =~
-               "pointer-events-none"
-
-      assert text_of_element(html, "#billing_cycle_tab_penultimate_cycle") =~ "Not available"
-    end
-
-    @tag :ee_only
-    test "last cycle tab is selected by default", %{
-      conn: conn,
-      user: user
-    } do
-      subscribe_to_plan(user, @v4_plan_id, last_bill_date: Timex.shift(Timex.today(), days: -1))
-
-      html =
-        conn
-        |> get(Routes.settings_path(conn, :subscription))
-        |> html_response(200)
-
-      assert text_of_attr(find(html, "#monthly_pageview_usage_container"), "x-data") ==
-               "{ tab: 'last_cycle' }"
     end
 
     @tag :ee_only
@@ -425,26 +383,31 @@ defmodule PlausibleWeb.SettingsControllerTest do
       site = new_site(owner: user)
 
       populate_stats(site, [
-        build(:event, name: "pageview", timestamp: Timex.shift(Timex.now(), days: -1)),
-        build(:event, name: "customevent", timestamp: Timex.shift(Timex.now(), days: -10)),
-        build(:event, name: "customevent", timestamp: Timex.shift(Timex.now(), days: -20))
+        build(:event, name: "pageview", timestamp: DateTime.shift(DateTime.utc_now(), day: -1)),
+        build(:event,
+          name: "customevent",
+          timestamp: DateTime.shift(DateTime.utc_now(), day: -10)
+        ),
+        build(:event,
+          name: "customevent",
+          timestamp: DateTime.shift(DateTime.utc_now(), day: -20)
+        )
       ])
 
       assert_usage = fn doc ->
         refute element_exists?(doc, "#total_pageviews_current_cycle")
-
-        assert text_of_element(doc, "#total_pageviews_last_30_days") =~
-                 "Total billable pageviews (last 30 days) 3"
-
         assert text_of_element(doc, "#pageviews_last_30_days") =~ "Pageviews 1"
         assert text_of_element(doc, "#custom_events_last_30_days") =~ "Custom events 2"
       end
 
       # for a trial user
-      conn
-      |> get(Routes.settings_path(conn, :subscription))
-      |> html_response(200)
-      |> assert_usage.()
+      trial_html =
+        conn
+        |> get(Routes.settings_path(conn, :subscription))
+        |> html_response(200)
+
+      assert_usage.(trial_html)
+      refute element_exists?(trial_html, "#total_pageviews_last_30_days")
 
       subscribe_to_plan(user, @v4_plan_id,
         status: :deleted,
@@ -493,44 +456,40 @@ defmodule PlausibleWeb.SettingsControllerTest do
       subscribe_to_plan(user, @v3_plan_id)
       new_site(owner: user)
 
-      site_usage_row_text =
+      html =
         conn
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
-        |> text_of_element("#site-usage-row")
 
-      assert site_usage_row_text =~ "Owned sites 1 / 50"
+      sites_usage_text = text_of_element(html, "[data-test-id='sites-usage']")
+      assert sites_usage_text =~ "1 / 50"
     end
 
     @tag :ee_only
     test "renders team members usage and limit", %{conn: conn, user: user} do
       subscribe_to_plan(user, @v4_plan_id)
 
-      team_member_usage_row_text =
+      html =
         conn
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
-        |> text_of_element("#team-member-usage-row")
 
-      assert team_member_usage_row_text =~ "Team members 0 / 3"
+      team_member_usage_text = text_of_element(html, "[data-test-id='team-member-usage']")
+      assert team_member_usage_text =~ "0 / 3"
     end
 
     @tag :ee_only
-    test "renders team member usage without limit if it's unlimited", %{conn: conn, user: user} do
+    test "renders team member usage with unlimited limit", %{conn: conn, user: user} do
       subscribe_to_plan(user, @v3_plan_id)
 
-      team_member_usage_row_text =
+      html =
         conn
         |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
-        |> text_of_element("#team-member-usage-row")
 
-      assert team_member_usage_row_text == "Team members 0"
+      team_member_usage_text = text_of_element(html, "[data-test-id='team-member-usage']")
+      assert team_member_usage_text =~ "/ Unlimited"
     end
-  end
-
-  describe "GET /billing/invoices" do
-    setup [:create_user, :log_in]
 
     test "does not show invoice section for a free subscription", %{conn: conn, user: user} do
       new_site(owner: user)
@@ -542,10 +501,10 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       html =
         conn
-        |> get(Routes.settings_path(conn, :invoices))
+        |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
-      assert html =~ "No invoices issued yet"
+      assert html =~ "You don't have any invoices yet."
     end
 
     @tag :ee_only
@@ -554,7 +513,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       html =
         conn
-        |> get(Routes.settings_path(conn, :invoices))
+        |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
       assert html =~ "Dec 24, 2020"
@@ -569,11 +528,62 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       html =
         conn
-        |> get(Routes.settings_path(conn, :invoices))
+        |> get(Routes.settings_path(conn, :subscription))
         |> html_response(200)
 
       assert html =~ "Invoices"
       assert text(html) =~ "We couldn't retrieve your invoices"
+    end
+
+    @tag :ee_only
+    test "shows dashboard link to the site when team has exactly one site", %{
+      conn: conn,
+      user: user
+    } do
+      new_site(owner: user)
+
+      html =
+        conn
+        |> get(Routes.settings_path(conn, :subscription))
+        |> html_response(200)
+
+      assert element_exists?(html, "[data-test-id='total-pageviews-dashboard-link']")
+    end
+
+    @tag :ee_only
+    test "shows no total dashboard link when team has multiple sites and no consolidated view", %{
+      conn: conn,
+      user: user
+    } do
+      new_site(owner: user)
+      new_site(owner: user)
+
+      html =
+        conn
+        |> get(Routes.settings_path(conn, :subscription))
+        |> html_response(200)
+
+      refute element_exists?(html, "[data-test-id='total-pageviews-dashboard-link']")
+    end
+
+    on_ee do
+      test "shows consolidated view dashboard link when team has a consolidated view", %{
+        conn: conn,
+        user: user
+      } do
+        new_site(owner: user)
+        new_site(owner: user)
+        team = team_of(user)
+        new_consolidated_view(team)
+
+        html =
+          conn
+          |> set_current_team(team)
+          |> get(Routes.settings_path(conn, :subscription))
+          |> html_response(200)
+
+        assert element_exists?(html, "[data-test-id='total-pageviews-dashboard-link']")
+      end
     end
   end
 
@@ -601,7 +611,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       another_session =
         user
-        |> Auth.UserSession.new_session("Some Device", seventy_minutes_ago)
+        |> Auth.UserSession.new_session("Some Device", now: seventy_minutes_ago)
         |> Repo.insert!()
 
       conn = get(conn, Routes.settings_path(conn, :security))
@@ -668,6 +678,23 @@ defmodule PlausibleWeb.SettingsControllerTest do
       conn = post(conn, Routes.settings_path(conn, :update_name), %{"user" => %{"name" => ""}})
 
       assert text(html_response(conn, 200)) =~ "can't be blank"
+    end
+  end
+
+  on_ee do
+    describe "POST /preferences/name - SSO user" do
+      setup [:create_user, :create_site, :create_team, :setup_sso, :provision_sso_user, :log_in]
+
+      test "refuses to update for SSO user", %{conn: conn, user: user} do
+        conn =
+          post(conn, Routes.settings_path(conn, :update_name), %{
+            "user" => %{"name" => "New name"}
+          })
+
+        assert redirected_to(conn, 302) == Routes.site_path(conn, :index)
+
+        assert Repo.reload!(user).name == user.name
+      end
     end
   end
 
@@ -842,6 +869,37 @@ defmodule PlausibleWeb.SettingsControllerTest do
     end
   end
 
+  on_ee do
+    describe "POST /security/password - SSO user" do
+      setup [:create_user, :create_site, :create_team, :setup_sso, :provision_sso_user, :log_in]
+
+      test "refuses to update for SSO user", %{conn: conn, user: user} do
+        password = "very-long-very-secret-123"
+        new_password = "super-long-super-secret-999"
+
+        original =
+          user
+          |> Auth.User.set_password(password)
+          |> Repo.update!()
+
+        conn =
+          post(conn, Routes.settings_path(conn, :update_password), %{
+            "user" => %{
+              "password" => new_password,
+              "old_password" => password,
+              "password_confirmation" => new_password
+            }
+          })
+
+        assert redirected_to(conn, 302) == Routes.site_path(conn, :index)
+
+        current_hash = Repo.reload!(user).password_hash
+        assert current_hash == original.password_hash
+        assert Plausible.Auth.Password.match?(password, current_hash)
+      end
+    end
+  end
+
   describe "POST /security/email" do
     setup [:create_user, :log_in]
 
@@ -943,7 +1001,35 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "user" => %{"password" => password, "email" => user.email}
         })
 
-      assert html_response(conn, 200) =~ "can&#39;t be the same"
+      assert html_response(conn, 200) =~ htmlize_quotes("can't be the same")
+    end
+  end
+
+  on_ee do
+    describe "POST /security/email - SSO user" do
+      setup [:create_user, :create_site, :create_team, :setup_sso, :provision_sso_user, :log_in]
+
+      test "refuses to update for SSO user", %{conn: conn, user: user} do
+        password = "very-long-very-secret-123"
+
+        user
+        |> Auth.User.set_password(password)
+        |> Repo.update!()
+
+        assert user.email_verified
+
+        conn =
+          post(conn, Routes.settings_path(conn, :update_email), %{
+            "user" => %{"email" => "new" <> user.email, "password" => password}
+          })
+
+        assert redirected_to(conn, 302) == Routes.site_path(conn, :index)
+
+        updated_user = Repo.reload!(user)
+
+        assert updated_user.email == user.email
+        assert updated_user.email_verified
+      end
     end
   end
 
@@ -1022,6 +1108,24 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       assert html_response(conn, 200)
     end
+
+    @tag :ee_only
+    test "lists types of keys", %{conn: conn, user: user} do
+      user
+      |> subscribe_to_enterprise_plan(
+        features: [Plausible.Billing.Feature.StatsAPI, Plausible.Billing.Feature.SitesAPI]
+      )
+
+      insert(:api_key, user: user)
+      insert(:api_key, user: user, scopes: ["sites:provision:*"])
+
+      conn = get(conn, Routes.settings_path(conn, :api_keys))
+
+      assert html = html_response(conn, 200)
+
+      assert html =~ "Stats API"
+      assert html =~ "Sites API"
+    end
   end
 
   describe "POST /settings/api-keys" do
@@ -1037,7 +1141,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "api_key" => %{
             "user_id" => user.id,
             "name" => "all your code are belong to us",
-            "key" => "swordfish"
+            "key" => "swordfish",
+            "type" => "stats_api"
           }
         })
 
@@ -1045,6 +1150,57 @@ defmodule PlausibleWeb.SettingsControllerTest do
       assert conn.status == 302
       assert key.name == "all your code are belong to us"
       assert key.team_id == team.id
+    end
+
+    test "can create a Sites API key", %{conn: conn, user: user} do
+      user
+      |> subscribe_to_enterprise_plan(
+        features: [
+          Plausible.Billing.Feature.StatsAPI,
+          Plausible.Billing.Feature.SitesAPI
+        ]
+      )
+
+      new_site(owner: user)
+
+      team = team_of(user)
+
+      conn =
+        post(conn, Routes.settings_path(conn, :api_keys), %{
+          "api_key" => %{
+            "user_id" => user.id,
+            "name" => "all your code are belong to us",
+            "key" => "swordfish",
+            "type" => "sites_api"
+          }
+        })
+
+      key = Plausible.Auth.ApiKey |> where(user_id: ^user.id) |> Repo.one()
+      assert conn.status == 302
+      assert key.name == "all your code are belong to us"
+      assert key.team_id == team.id
+      assert key.scopes == ["sites:provision:*"]
+    end
+
+    test "can't create a Sites API key without Sites API feature", %{conn: conn, user: user} do
+      user |> subscribe_to_business_plan()
+
+      new_site(owner: user)
+
+      conn =
+        post(conn, Routes.settings_path(conn, :api_keys), %{
+          "api_key" => %{
+            "user_id" => user.id,
+            "name" => "all your code are belong to us",
+            "key" => "swordfish",
+            "type" => "sites_api"
+          }
+        })
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :new_api_key)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
+               "Your current subscription plan does not include Sites API access"
     end
 
     test "can create an API key when switched to another team", %{conn: conn, user: user} do
@@ -1061,7 +1217,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "api_key" => %{
             "user_id" => user.id,
             "name" => "all your code are belong to us",
-            "key" => "swordfish"
+            "key" => "swordfish",
+            "type" => "stats_api"
           }
         })
 
@@ -1079,7 +1236,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "api_key" => %{
             "user_id" => user.id,
             "name" => "all your code are belong to us",
-            "key" => "swordfish"
+            "key" => "swordfish",
+            "type" => "stats_api"
           }
         })
 
@@ -1088,7 +1246,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "api_key" => %{
             "user_id" => user.id,
             "name" => "all your code are belong to us",
-            "key" => "swordfish"
+            "key" => "swordfish",
+            "type" => "stats_api"
           }
         })
 
@@ -1105,7 +1264,8 @@ defmodule PlausibleWeb.SettingsControllerTest do
           "api_key" => %{
             "user_id" => other_user.id,
             "name" => "all your code are belong to us",
-            "key" => "swordfish"
+            "key" => "swordfish",
+            "type" => "stats_api"
           }
         })
 
@@ -1143,7 +1303,9 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       assert html = html_response(conn, 200)
 
-      refute html =~ "Your account cannot be deleted because you have an active subscription"
+      refute html =~
+               "You have an active subscription. To delete your account, cancel your subscription first."
+
       assert html =~ "Delete my account"
     end
 
@@ -1153,7 +1315,9 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       assert html = html_response(conn, 200)
 
-      assert html =~ "Your account cannot be deleted because you have an active subscription"
+      assert html =~
+               "You have an active subscription. To delete your account, cancel your subscription first."
+
       refute html =~ "Delete my account"
     end
 
@@ -1169,35 +1333,203 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       assert html = html_response(conn, 200)
 
-      assert html =~ "You are the sole owner of one or more teams"
+      assert html =~ "You're the sole owner of one or more teams"
       refute html =~ "Delete my account"
     end
   end
 
-  describe "Team Settings" do
+  @menu_items [
+    preferences: {"Preferences", "/settings/preferences"},
+    security: {"Security", "/settings/security"},
+    subscription: {"Subscription", "/settings/billing/subscription"},
+    api_keys: {"API keys", "/settings/api-keys"},
+    danger_zone: {"Danger zone", "/settings/danger-zone"},
+    team_general: {"General", "/settings/team/general"},
+    sso: {"Single Sign-On", "/settings/sso/info"},
+    team_danger_zone: {"Danger zone", "/settings/team/delete"}
+  ]
+
+  on_ee do
+    describe "Account settings - SSO user" do
+      setup [:create_user, :create_site, :create_team, :setup_sso, :provision_sso_user, :log_in]
+
+      test "shows only expected menu items", %{conn: conn} do
+        conn = get(conn, Routes.settings_path(conn, :preferences))
+        assert html = html_response(conn, 200)
+
+        expected_account_menu = [:preferences, :security, :subscription, :api_keys]
+
+        html
+        |> refute_unexpected_menu_items([
+          :team_general,
+          :sso,
+          :team_danger_zone,
+          :danger_zone
+        ])
+        |> LazyHTML.from_document()
+        |> assert_sidebar_menu(expected_account_menu)
+        |> assert_mobile_menu(expected_account_menu)
+      end
+
+      test "does not allow to update name in preferences", %{conn: conn} do
+        conn = get(conn, Routes.settings_path(conn, :preferences))
+        assert html = html_response(conn, 200)
+        refute html =~ "Change name"
+      end
+
+      test "does not allow to update email in security settings", %{conn: conn} do
+        conn = get(conn, Routes.settings_path(conn, :security))
+        assert html = html_response(conn, 200)
+        refute html =~ "Change email"
+      end
+
+      test "does not allow to change password in security settings", %{conn: conn} do
+        conn = get(conn, Routes.settings_path(conn, :security))
+        assert html = html_response(conn, 200)
+        refute html =~ "Change password"
+      end
+
+      test "does not allow to disable 2FA in security settings", %{conn: conn, user: user} do
+        {:ok, user, _} = Auth.TOTP.initiate(user)
+        {:ok, _, _} = Auth.TOTP.enable(user, :skip_verify)
+
+        conn = get(conn, Routes.settings_path(conn, :security))
+        assert html = html_response(conn, 200)
+        assert text_of_element(html, "button[disabled]") =~ "Disable 2FA"
+      end
+    end
+  end
+
+  describe "Team settings" do
     setup [:create_user, :log_in]
 
-    test "does not render team settings, when no team assigned", %{conn: conn} do
+    test "when no team is assigned & the user doesn't have a subscription, limited account menu is present",
+         %{conn: conn} do
       conn = get(conn, Routes.settings_path(conn, :preferences))
       html = html_response(conn, 200)
-      refute html =~ "Team Settings"
+      refute html =~ "Team"
+
+      expected_account_menu =
+        if(ee?(),
+          do: [:preferences, :security, :subscription, :api_keys, :danger_zone],
+          else: [:preferences, :security, :api_keys, :danger_zone]
+        )
+
+      html
+      |> refute_unexpected_menu_items(
+        if(ee?(),
+          do: [:team_general, :sso],
+          else: [:subscription, :team_general, :sso]
+        )
+      )
+      |> LazyHTML.from_document()
+      |> assert_sidebar_menu(expected_account_menu)
+      |> assert_mobile_menu(expected_account_menu)
     end
 
-    test "renders team settings, when team assigned and set up", %{conn: conn, user: user} do
+    test "when no team is assigned & the user has a subscription, the account menu shows subscription",
+         %{
+           conn: conn,
+           user: user
+         } do
+      subscribe_to_growth_plan(user)
+
+      conn = get(conn, Routes.settings_path(conn, :preferences))
+      html = html_response(conn, 200)
+
+      expected_account_menu =
+        if(ee?(),
+          do: [:preferences, :security, :subscription, :api_keys, :danger_zone],
+          else: [:preferences, :security, :api_keys, :danger_zone]
+        )
+
+      html
+      |> refute_unexpected_menu_items(
+        if(ee?(),
+          do: [:team_general, :sso],
+          else: [:subscription, :team_general, :sso]
+        )
+      )
+      |> LazyHTML.from_document()
+      |> assert_sidebar_menu(expected_account_menu)
+      |> assert_mobile_menu(expected_account_menu)
+    end
+
+    test "when team is set up & there's no subscription, renders limited account & team menu",
+         %{
+           conn: conn,
+           user: user
+         } do
       {:ok, team} = Plausible.Teams.get_or_create(user)
       team = Plausible.Teams.complete_setup(team)
       conn = set_current_team(conn, team)
       conn = get(conn, Routes.settings_path(conn, :preferences))
       html = html_response(conn, 200)
-      assert html =~ "Team Settings"
+      assert html =~ ~r/Team.*#{Regex.escape(team.name)}/s
       assert html =~ team.name
+
+      expected_account_menu = [
+        :preferences,
+        :security,
+        :danger_zone
+      ]
+
+      expected_team_menu =
+        if(ee?(),
+          do: [:team_general, :subscription, :api_keys, :sso, :team_danger_zone],
+          else: [:team_general, :api_keys, :team_danger_zone]
+        )
+
+      html
+      |> LazyHTML.from_document()
+      |> assert_sidebar_menu(expected_account_menu, expected_team_menu)
+      |> assert_mobile_menu(expected_account_menu, expected_team_menu)
+    end
+
+    test "when team is set up, and there's a subscription, renders account & team menu with subscription",
+         %{
+           conn: conn,
+           user: user
+         } do
+      subscribe_to_growth_plan(user)
+      {:ok, team} = Plausible.Teams.get_or_create(user)
+      team = Plausible.Teams.complete_setup(team)
+      conn = set_current_team(conn, team)
+
+      conn = get(conn, Routes.settings_path(conn, :preferences))
+      html = html_response(conn, 200)
+      assert html =~ ~r/Team.*#{Regex.escape(team.name)}/s
+      assert html =~ team.name
+
+      expected_account_menu = [
+        :preferences,
+        :security,
+        :danger_zone
+      ]
+
+      expected_team_menu =
+        if(ee?(),
+          do: [
+            :team_general,
+            :subscription,
+            :api_keys,
+            :sso,
+            :team_danger_zone
+          ],
+          else: [:team_general, :api_keys, :team_danger_zone]
+        )
+
+      html
+      |> LazyHTML.from_document()
+      |> assert_sidebar_menu(expected_account_menu, expected_team_menu)
+      |> assert_mobile_menu(expected_account_menu, expected_team_menu)
     end
 
     test "does not render team settings, when team not set up", %{conn: conn, user: user} do
       {:ok, team} = Plausible.Teams.get_or_create(user)
       conn = get(conn, Routes.settings_path(conn, :preferences))
       html = html_response(conn, 200)
-      refute html =~ "Team Settings"
+      refute html =~ ~r/Team.*#{Regex.escape(team.name)}/s
       refute html =~ team.name
     end
 
@@ -1207,7 +1539,7 @@ defmodule PlausibleWeb.SettingsControllerTest do
       conn = set_current_team(conn, team)
       conn = get(conn, Routes.settings_path(conn, :team_general))
       html = html_response(conn, 200)
-      assert html =~ "Team Information"
+      assert html =~ "Team name"
       assert html =~ "Change the name of your team"
       assert text_of_attr(html, "input#team_name", "value") == team.name
     end
@@ -1217,13 +1549,13 @@ defmodule PlausibleWeb.SettingsControllerTest do
 
       conn =
         post(conn, Routes.settings_path(conn, :update_team_name), %{
-          "team" => %{"name" => "New Name"}
+          "team" => %{"name" => "New name"}
         })
 
       assert redirected_to(conn, 302) ==
                Routes.settings_path(conn, :team_general) <> "#update-name"
 
-      assert Repo.reload!(team).name == "New Name"
+      assert Repo.reload!(team).name == "New name"
     end
 
     test "POST /settings/team/general/name - changeset error", %{conn: conn, user: user} do
@@ -1237,6 +1569,29 @@ defmodule PlausibleWeb.SettingsControllerTest do
         })
 
       assert text(html_response(conn, 200)) =~ "can't be blank"
+    end
+
+    test "POST /settings/team/leave", %{conn: conn, user: user} do
+      {:ok, team} = Plausible.Teams.get_or_create(user)
+      team = Plausible.Teams.complete_setup(team)
+      conn = set_current_team(conn, team)
+      add_member(team, role: :owner)
+
+      conn = post(conn, Routes.settings_path(conn, :leave_team))
+
+      assert redirected_to(conn, 302) == Routes.site_path(conn, :index, __team: "none")
+      assert Phoenix.Flash.get(conn.assigns.flash, :success) =~ "You have left"
+    end
+
+    test "POST /settings/team/leave - only owner", %{conn: conn, user: user} do
+      {:ok, team} = Plausible.Teams.get_or_create(user)
+      team = Plausible.Teams.complete_setup(team)
+      conn = set_current_team(conn, team)
+
+      conn = post(conn, Routes.settings_path(conn, :leave_team))
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "You can't leave"
     end
 
     test "GET /settings/team/delete - without active subscription", %{conn: conn, user: user} do
@@ -1335,6 +1690,325 @@ defmodule PlausibleWeb.SettingsControllerTest do
     end
   end
 
+  describe "POST /team/force_2fa/enable" do
+    setup [:create_user, :log_in, :create_team, :setup_team]
+
+    test "enables enforcing 2FA", %{conn: conn, team: team} do
+      refute team.policy.force_2fa
+
+      conn = post(conn, Routes.settings_path(conn, :enable_team_force_2fa))
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :success) =~
+               "2FA is now required for all team members"
+
+      assert Repo.reload!(team).policy.force_2fa
+    end
+
+    on_ee do
+      test "adds entry to audit log", %{conn: conn, team: team, user: user} do
+        conn = post(conn, Routes.settings_path(conn, :enable_team_force_2fa))
+
+        assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+
+        assert_matches [
+                         %{
+                           name: "force_2fa_enabled",
+                           user_id: ^user.id,
+                           team_id: ^team.id,
+                           actor_type: :user,
+                           change: %{
+                             "before" => %{"policy" => %{"force_2fa" => false}},
+                             "after" => %{"policy" => %{"after" => %{"force_2fa" => true}}}
+                           }
+                         }
+                       ] =
+                         Plausible.Audit.list_entries(
+                           entity: "Plausible.Teams.Team",
+                           entity_id: "#{team.id}"
+                         )
+      end
+    end
+
+    test "sends e-mail to all other team members", %{conn: conn, team: team, user: user} do
+      site = new_site(team: team)
+
+      member1 = add_member(team, role: :viewer)
+      member2 = add_member(team, role: :owner)
+
+      member_with_2fa = add_member(team, role: :editor)
+
+      # enable 2FA
+      {:ok, member_with_2fa, _} = Plausible.Auth.TOTP.initiate(member_with_2fa)
+      code = NimbleTOTP.verification_code(member_with_2fa.totp_secret)
+      {:ok, _member_with_2fa, _} = Plausible.Auth.TOTP.enable(member_with_2fa, code)
+
+      guest = add_guest(site, role: :viewer)
+
+      conn = post(conn, Routes.settings_path(conn, :enable_team_force_2fa))
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+
+      # The email come in order in which they are sent.
+      # As the logic sending them does not force any order,
+      # we have to match them in order-independent way.
+      Enum.reduce(1..2, [member1.email, member2.email], fn _, emails ->
+        assert assert_delivered_email_matches(%{
+                 subject: "Your team now requires 2FA",
+                 to: [{_, email}]
+               })
+
+        assert email in emails
+
+        List.delete(emails, email)
+      end)
+
+      # member with 2FA already enabled is not notified
+      refute_email_delivered_with(
+        subject: "Your team now requires 2FA",
+        to: [nil: member_with_2fa.email]
+      )
+
+      # guests are not notified because they are not affected
+      refute_email_delivered_with(
+        subject: "Your team now requires 2FA",
+        to: [nil: guest.email]
+      )
+
+      # the user enabling the enforcement is not notified
+      refute_email_delivered_with(
+        subject: "Your team now requires 2FA",
+        to: [nil: user.email]
+      )
+    end
+
+    test "is idempotent", %{conn: conn, user: user, team: team} do
+      {:ok, team} = Plausible.Teams.disable_force_2fa(team, user, "password")
+
+      conn = post(conn, Routes.settings_path(conn, :enable_team_force_2fa))
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+      assert Repo.reload!(team).policy.force_2fa
+    end
+
+    test "can't be enabled by anyone other than owner", %{conn: conn, team: team} do
+      admin = add_member(team, role: :admin)
+      {:ok, ctx} = log_in(%{conn: conn, user: admin})
+
+      conn =
+        ctx
+        |> Keyword.fetch!(:conn)
+        |> set_current_team(team)
+
+      conn = post(conn, Routes.settings_path(conn, :enable_team_force_2fa))
+
+      assert redirected_to(conn, 302) == Routes.site_path(conn, :index)
+      refute Repo.reload!(team).policy.force_2fa
+    end
+  end
+
+  describe "POST /team/force_2fa/disable" do
+    setup [:create_user, :log_in, :create_team, :setup_team]
+
+    setup %{user: user} do
+      # enable 2FA
+      {:ok, user, _} = Plausible.Auth.TOTP.initiate(user)
+      code = NimbleTOTP.verification_code(user.totp_secret)
+      {:ok, _user, _} = Plausible.Auth.TOTP.enable(user, code)
+
+      {:ok, user: user}
+    end
+
+    test "disables enforcing 2FA", %{conn: conn, team: team, user: user} do
+      {:ok, team} = Plausible.Teams.enable_force_2fa(team, user)
+
+      conn =
+        post(conn, Routes.settings_path(conn, :disable_team_force_2fa), %{
+          "password" => "password"
+        })
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :success) =~
+               "2FA is no longer enforced for team members"
+
+      refute Repo.reload!(team).policy.force_2fa
+    end
+
+    on_ee do
+      test "adds entry to audit log", %{conn: conn, user: user, team: team} do
+        {:ok, team} = Plausible.Teams.enable_force_2fa(team, user)
+
+        conn =
+          post(conn, Routes.settings_path(conn, :disable_team_force_2fa), %{
+            "password" => "password"
+          })
+
+        assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+
+        assert_matches [
+                         %{
+                           name: "force_2fa_disabled",
+                           user_id: ^user.id,
+                           team_id: ^team.id,
+                           actor_type: :user,
+                           change: %{
+                             "before" => %{"policy" => %{"force_2fa" => true}},
+                             "after" => %{"policy" => %{"after" => %{"force_2fa" => false}}}
+                           }
+                         },
+                         _
+                       ] =
+                         Plausible.Audit.list_entries(
+                           entity: "Plausible.Teams.Team",
+                           entity_id: "#{team.id}"
+                         )
+      end
+    end
+
+    test "is idempotent", %{conn: conn, team: team} do
+      conn =
+        post(conn, Routes.settings_path(conn, :disable_team_force_2fa), %{
+          "password" => "password"
+        })
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+      refute Repo.reload!(team).policy.force_2fa
+    end
+
+    test "returns error on invalid password", %{conn: conn} do
+      conn =
+        post(conn, Routes.settings_path(conn, :disable_team_force_2fa), %{"password" => "invalid"})
+
+      assert redirected_to(conn, 302) == Routes.settings_path(conn, :team_general)
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Incorrect password provided"
+    end
+
+    test "can't be disabled by anyone other than owner", %{conn: conn, team: team, user: user} do
+      {:ok, team} = Plausible.Teams.enable_force_2fa(team, user)
+
+      admin = add_member(team, role: :admin)
+
+      # enable TOTP for admin
+      {:ok, admin, _} = Plausible.Auth.TOTP.initiate(admin)
+      code = NimbleTOTP.verification_code(admin.totp_secret)
+      {:ok, _admin, _} = Plausible.Auth.TOTP.enable(admin, code)
+
+      {:ok, ctx} = log_in(%{conn: conn, user: admin})
+
+      conn =
+        ctx
+        |> Keyword.fetch!(:conn)
+        |> set_current_team(team)
+
+      conn =
+        post(conn, Routes.settings_path(conn, :disable_team_force_2fa), %{
+          "password" => "password"
+        })
+
+      assert redirected_to(conn, 302) == Routes.site_path(conn, :index)
+      assert Repo.reload!(team).policy.force_2fa
+    end
+  end
+
+  describe "GET /settings/team/general - enforce 2FA disabled" do
+    setup [:create_user, :log_in, :create_team, :setup_team]
+
+    test "is visible to owner", %{conn: conn} do
+      conn = get(conn, Routes.settings_path(conn, :team_general))
+      html = html_response(conn, 200)
+
+      assert element_exists?(html, "div#enable-force-2fa")
+      refute element_exists?(html, "div#disable-force-2fa")
+    end
+
+    test "is not visible to anyone other than owner", %{conn: conn, team: team} do
+      admin = add_member(team, role: :admin)
+      {:ok, ctx} = log_in(%{conn: conn, user: admin})
+
+      conn =
+        ctx
+        |> Keyword.fetch!(:conn)
+        |> set_current_team(team)
+
+      conn = get(conn, Routes.settings_path(conn, :team_general))
+      html = html_response(conn, 200)
+
+      refute element_exists?(html, "div#force-2fa")
+      refute element_exists?(html, "div#enable-force-2fa")
+      refute element_exists?(html, "div#disable-force-2fa")
+    end
+  end
+
+  describe "GET /settings/team/general - enforce 2FA enabled" do
+    setup [:create_user, :log_in, :create_team, :setup_team]
+
+    setup %{user: user, team: team} do
+      # enable 2FA
+      {:ok, user, _} = Plausible.Auth.TOTP.initiate(user)
+      code = NimbleTOTP.verification_code(user.totp_secret)
+      {:ok, _user, _} = Plausible.Auth.TOTP.enable(user, code)
+
+      {:ok, team} = Plausible.Teams.enable_force_2fa(team, user)
+
+      {:ok, user: user, team: team}
+    end
+
+    test "is visible to owner", %{conn: conn} do
+      conn = get(conn, Routes.settings_path(conn, :team_general))
+      html = html_response(conn, 200)
+
+      refute element_exists?(html, "div#enable-force-2fa")
+      assert element_exists?(html, "div#disable-force-2fa")
+    end
+
+    test "is not visible to anyone other than owner", %{conn: conn, team: team} do
+      admin = add_member(team, role: :admin)
+
+      # enable TOTP for admin
+      {:ok, admin, _} = Plausible.Auth.TOTP.initiate(admin)
+      code = NimbleTOTP.verification_code(admin.totp_secret)
+      {:ok, _admin, _} = Plausible.Auth.TOTP.enable(admin, code)
+
+      {:ok, ctx} = log_in(%{conn: conn, user: admin})
+
+      conn =
+        ctx
+        |> Keyword.fetch!(:conn)
+        |> set_current_team(team)
+
+      conn = get(conn, Routes.settings_path(conn, :team_general))
+      html = html_response(conn, 200)
+
+      refute element_exists?(html, "div#force-2fa")
+      refute element_exists?(html, "div#enable-force-2fa")
+      refute element_exists?(html, "div#disable-force-2fa")
+    end
+  end
+
+  describe "account dropdown menu (_header.html)" do
+    setup [:create_user, :log_in]
+
+    test "renders the 'Create a team' option", %{conn: conn, user: user} do
+      subscribe_to_growth_plan(user)
+      conn = get(conn, Routes.settings_path(conn, :preferences))
+      html = html_response(conn, 200)
+      assert text_of_element(html, ~s/[data-test="create-a-team-cta"]/) == "Create a team"
+    end
+
+    test "does not render the 'Create a team' option if a team is already set up", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, team} = Plausible.Teams.get_or_create(user)
+      Plausible.Teams.complete_setup(team)
+      conn = get(conn, Routes.settings_path(conn, :preferences))
+      html = html_response(conn, 200)
+      refute element_exists?(html, ~s/[data-test="create-a-team-cta"]/)
+    end
+  end
+
   defp configure_enterprise_plan(user, attrs \\ []) do
     subscribe_to_enterprise_plan(
       user,
@@ -1348,4 +2022,73 @@ defmodule PlausibleWeb.SettingsControllerTest do
       )
     )
   end
+
+  defp assert_sidebar_menu(document, ordered_account_menu_keys, ordered_team_menu_keys \\ []) do
+    ordered_menu_keys = Enum.concat(ordered_account_menu_keys, ordered_team_menu_keys)
+    assert get_expected_menu(ordered_menu_keys) == get_sidebar_menu_items(document)
+
+    document
+  end
+
+  defp assert_mobile_menu(
+         document,
+         ordered_account_menu_keys,
+         ordered_team_menu_keys \\ []
+       ) do
+    expected_account_items =
+      ordered_account_menu_keys
+      |> get_expected_menu()
+      |> Enum.map(fn {text, "/settings/" <> path_fragment} ->
+        {"Account: #{text}", path_fragment}
+      end)
+
+    expected_team_items =
+      ordered_team_menu_keys
+      |> get_expected_menu()
+      |> Enum.map(fn {text, "/settings/" <> path_fragment} ->
+        {"Team: #{text}", path_fragment}
+      end)
+
+    assert Enum.concat(
+             expected_account_items,
+             expected_team_items
+           ) ==
+             get_mobile_menu_options(document)
+
+    document
+  end
+
+  defp get_expected_menu(ordered_menu_keys) do
+    ordered_menu_keys
+    |> Keyword.new(&{&1, nil})
+    |> Keyword.intersect(@menu_items)
+    |> Keyword.values()
+  end
+
+  defp refute_unexpected_menu_items(html, unexpected_menu_keys) do
+    refuted_menu_items = @menu_items |> Keyword.take(unexpected_menu_keys) |> Keyword.values()
+
+    for {text, link} <- refuted_menu_items do
+      refute html =~ text
+      refute html =~ link
+    end
+
+    html
+  end
+
+  defp get_mobile_menu_options(document) do
+    LazyHTML.query(document, "[data-testid='mobile-nav-dropdown'] option")
+    |> Enum.map(&parse_option/1)
+  end
+
+  defp parse_option(option),
+    do: {LazyHTML.text(option), LazyHTML.attribute(option, "value") |> List.first()}
+
+  defp get_sidebar_menu_items(document) do
+    LazyHTML.query(document, "[data-testid='settings-sidebar'] a")
+    |> Enum.map(&parse_link/1)
+  end
+
+  defp parse_link(link),
+    do: {LazyHTML.text(link) |> String.trim(), LazyHTML.attribute(link, "href") |> List.first()}
 end

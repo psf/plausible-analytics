@@ -1,9 +1,8 @@
 import React, { useRef } from 'react'
-import { clearedComparisonSearch } from '../../query'
+import { clearedComparisonSearch } from '../../dashboard-state'
 import classNames from 'classnames'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import { useSiteContext } from '../../site-context'
-import { BlurMenuButtonOnEscape } from '../../keybinding'
 import {
   AppNavigationLink,
   useAppNavigate
@@ -16,9 +15,9 @@ import {
   ComparisonMatchMode,
   getCurrentComparisonPeriodDisplayName,
   getSearchToApplyCustomComparisonDates
-} from '../../query-time-periods'
+} from '../../dashboard-time-periods'
 import { Popover, Transition } from '@headlessui/react'
-import { popover } from '../../components/popover'
+import { popover, BlurMenuButtonOnEscape } from '../../components/popover'
 import {
   datemenuButtonClassName,
   DateMenuChevron,
@@ -38,19 +37,19 @@ export const ComparisonPeriodMenuItems = ({
   closeDropdown: () => void
   toggleCalendar: () => void
 }) => {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
 
-  if (!isComparisonEnabled(query.comparison)) {
+  if (!isComparisonEnabled(dashboardState.comparison)) {
     return null
   }
 
   return (
     <Transition
+      as="div"
       {...popover.transition.props}
       className={classNames(
-        'mt-2',
         popover.transition.classNames.fullwidth,
-        'md:left-auto md:w-56'
+        'mt-2 md:w-56 md:left-auto md:origin-top-right'
       )}
     >
       <Popover.Panel className={popover.panel.classNames.roundedSheet}>
@@ -61,7 +60,7 @@ export const ComparisonPeriodMenuItems = ({
         ].map((comparisonMode) => (
           <AppNavigationLink
             key={comparisonMode}
-            data-selected={query.comparison === comparisonMode}
+            data-selected={dashboardState.comparison === comparisonMode}
             className={linkClassName}
             search={(search) => ({
               ...search,
@@ -74,18 +73,18 @@ export const ComparisonPeriodMenuItems = ({
           </AppNavigationLink>
         ))}
         <AppNavigationLink
-          data-selected={query.comparison === ComparisonMode.custom}
+          data-selected={dashboardState.comparison === ComparisonMode.custom}
           className={linkClassName}
           search={(s) => s}
           onClick={toggleCalendar}
         >
           {COMPARISON_MODES[ComparisonMode.custom]}
         </AppNavigationLink>
-        {query.comparison !== ComparisonMode.custom && (
+        {dashboardState.comparison !== ComparisonMode.custom && (
           <>
             <MenuSeparator />
             <AppNavigationLink
-              data-selected={query.match_day_of_week === true}
+              data-selected={dashboardState.match_day_of_week === true}
               className={linkClassName}
               search={(s) => ({ ...s, match_day_of_week: true })}
               onClick={closeDropdown}
@@ -93,7 +92,7 @@ export const ComparisonPeriodMenuItems = ({
               {COMPARISON_MATCH_MODE_LABELS[ComparisonMatchMode.MatchDayOfWeek]}
             </AppNavigationLink>
             <AppNavigationLink
-              data-selected={query.match_day_of_week === false}
+              data-selected={dashboardState.match_day_of_week === false}
               className={linkClassName}
               search={(s) => ({ ...s, match_day_of_week: false })}
               onClick={closeDropdown}
@@ -112,7 +111,7 @@ export const ComparisonPeriodMenu = ({
   closeDropdown
 }: PopoverMenuProps) => {
   const site = useSiteContext()
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
 
   const buttonRef = useRef<HTMLButtonElement>(null)
   const toggleCalendar = () => {
@@ -126,7 +125,7 @@ export const ComparisonPeriodMenu = ({
       <BlurMenuButtonOnEscape targetRef={buttonRef} />
       <Popover.Button className={datemenuButtonClassName} ref={buttonRef}>
         <span className={popover.toggleButton.classNames.truncatedText}>
-          {getCurrentComparisonPeriodDisplayName({ site, query })}
+          {getCurrentComparisonPeriodDisplayName({ site, dashboardState })}
         </span>
         <DateMenuChevron />
       </Popover.Button>
@@ -144,7 +143,7 @@ export const ComparisonCalendarMenu = ({
 }: PopoverMenuProps) => {
   const site = useSiteContext()
   const navigate = useAppNavigate()
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
 
   return (
     <>
@@ -166,8 +165,11 @@ export const ComparisonCalendarMenu = ({
           minDate={site.statsBegin}
           maxDate={formatISO(nowForSite(site))}
           defaultDates={
-            query.compare_from && query.compare_to
-              ? [formatISO(query.compare_from), formatISO(query.compare_to)]
+            dashboardState.compare_from && dashboardState.compare_to
+              ? [
+                  formatISO(dashboardState.compare_from),
+                  formatISO(dashboardState.compare_to)
+                ]
               : undefined
           }
         />

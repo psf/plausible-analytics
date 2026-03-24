@@ -6,32 +6,28 @@ defmodule Plausible.Teams.Billing do
   import Ecto.Query
 
   alias Plausible.Billing.EnterprisePlan
-  alias Plausible.Billing.Plans
   alias Plausible.Billing.Subscription
   alias Plausible.Billing.Subscriptions
   alias Plausible.Repo
   alias Plausible.Teams
 
-  alias Plausible.Billing.{Plan, Plans, EnterprisePlan, Feature}
-  alias Plausible.Billing.Feature.{Goals, Props, StatsAPI}
+  alias Plausible.Billing.{EnterprisePlan, Feature, Plan, Plans, Quota}
+  alias Plausible.Billing.Feature.{Goals, Props, SitesAPI, StatsAPI, SharedLinks, SSO}
 
   require Plausible.Billing.Subscription.Status
 
+  # Features that are always available, regardless of team plan
+  @free_features [Goals]
+
   @limit_sites_since ~D[2021-05-05]
 
-  @type cycles_usage() :: %{cycle() => usage_cycle()}
+  @max_sites_for_usage_breakdown 10
+  def max_sites_for_usage_breakdown, do: @max_sites_for_usage_breakdown
 
-  @typep cycle :: :current_cycle | :last_cycle | :penultimate_cycle
+  @typep last_30_days_usage() :: %{:last_30_days => Quota.usage_cycle()}
+  @typep monthly_pageview_usage() :: Quota.cycles_usage() | last_30_days_usage()
 
-  @typep usage_cycle :: %{
-           date_range: Date.Range.t(),
-           pageviews: non_neg_integer(),
-           custom_events: non_neg_integer(),
-           total: non_neg_integer()
-         }
-
-  @typep last_30_days_usage() :: %{:last_30_days => usage_cycle()}
-  @typep monthly_pageview_usage() :: cycles_usage() | last_30_days_usage()
+  def free_features(), do: @free_features
 
   def grandfathered_team?(nil), do: false
 
@@ -223,17 +219,15 @@ defmodule Plausible.Teams.Billing do
   @doc """
   Returns the number of sites the given team owns.
   """
-  @spec site_usage(Teams.Team.t()) :: non_neg_integer()
+  @spec site_usage(Teams.Team.t() | nil) :: non_neg_integer()
   def site_usage(nil), do: 0
 
   def site_usage(team) do
-    team
-    |> Teams.owned_sites()
-    |> length()
+    Teams.owned_sites_count(team)
   end
 
   on_ee do
-    @team_member_limit_for_trials 3
+    @team_member_limit_for_trials 10
 
     def team_member_limit(nil) do
       @team_member_limit_for_trials
@@ -248,8 +242,16 @@ defmodule Plausible.Teams.Billing do
         nil -> @team_member_limit_for_trials
       end
     end
+
+    def solo?(nil), do: true
+
+    def solo?(team) do
+      team_member_limit(team) == 0
+    end
   else
     def team_member_limit(_team), do: :unlimited
+
+    def solo?(_team), do: false
   end
 
   @doc """
@@ -348,7 +350,7 @@ defmodule Plausible.Teams.Billing do
   team owns. Alternatively, given an optional argument of `site_ids`, the usage from
   across all those sites is queried instead.
   """
-  @spec monthly_pageview_usage(Teams.Team.t(), list() | nil) :: monthly_pageview_usage()
+  @spec monthly_pageview_usage(Teams.Team.t() | nil, list() | nil) :: monthly_pageview_usage()
   def monthly_pageview_usage(team, site_ids \\ nil)
 
   def monthly_pageview_usage(team, nil) do
@@ -374,7 +376,7 @@ defmodule Plausible.Teams.Billing do
     end
   end
 
-  @spec team_member_usage(Teams.Team.t(), Keyword.t()) :: non_neg_integer()
+  @spec team_member_usage(Teams.Team.t() | nil, Keyword.t()) :: non_neg_integer()
   @doc """
   Returns the total count of team members associated with the team's sites.
 
@@ -413,7 +415,7 @@ defmodule Plausible.Teams.Billing do
   def usage_cycle(team, cycle, owned_site_ids \\ nil, today \\ Date.utc_today())
 
   def usage_cycle(team, cycle, nil, today) do
-    owned_site_ids = team |> Teams.owned_sites() |> Enum.map(& &1.id)
+    owned_site_ids = Teams.owned_sites_ids(team)
     usage_cycle(team, cycle, owned_site_ids, today)
   end
 
@@ -427,7 +429,8 @@ defmodule Plausible.Teams.Billing do
       date_range: date_range,
       pageviews: pageviews,
       custom_events: custom_events,
-      total: pageviews + custom_events
+      total: pageviews + custom_events,
+      per_site: per_site_usage(owned_site_ids, date_range)
     }
   end
 
@@ -436,7 +439,7 @@ defmodule Plausible.Teams.Billing do
     last_bill_date = team.subscription.last_bill_date
 
     normalized_last_bill_date =
-      Date.shift(last_bill_date, month: Timex.diff(today, last_bill_date, :months))
+      Date.shift(last_bill_date, month: Plausible.Times.diff(today, last_bill_date, :month))
 
     date_range =
       case cycle do
@@ -466,8 +469,48 @@ defmodule Plausible.Teams.Billing do
       date_range: date_range,
       pageviews: pageviews,
       custom_events: custom_events,
-      total: pageviews + custom_events
+      total: pageviews + custom_events,
+      per_site: per_site_usage(owned_site_ids, date_range)
     }
+  end
+
+  defp per_site_usage(owned_site_ids, _date_range)
+       when length(owned_site_ids) <= 1 or length(owned_site_ids) > @max_sites_for_usage_breakdown,
+       do: []
+
+  defp per_site_usage(owned_site_ids, date_range) do
+    per_site_usage_breakdown =
+      Plausible.Stats.Clickhouse.per_site_usage_breakdown(owned_site_ids, date_range)
+
+    active_site_ids = Enum.map(per_site_usage_breakdown, fn {site_id, _, _} -> site_id end)
+    inactive_site_ids = owned_site_ids -- active_site_ids
+
+    domains =
+      Map.new(
+        Repo.all(
+          from(s in Plausible.Site,
+            where: s.id in ^owned_site_ids,
+            select: {s.id, s.domain}
+          )
+        )
+      )
+
+    usage_mapping =
+      Map.new(per_site_usage_breakdown, fn {site_id, pageviews, custom_events} ->
+        {site_id, %{pageviews: pageviews, custom_events: custom_events}}
+      end)
+
+    Enum.map(active_site_ids ++ inactive_site_ids, fn site_id ->
+      pageviews = usage_mapping[site_id][:pageviews] || 0
+      custom_events = usage_mapping[site_id][:custom_events] || 0
+
+      %{
+        domain: Map.get(domains, site_id),
+        pageviews: pageviews,
+        custom_events: custom_events,
+        total: pageviews + custom_events
+      }
+    end)
   end
 
   @spec features_usage(Teams.Team.t() | nil, list() | nil) :: [atom()]
@@ -483,69 +526,106 @@ defmodule Plausible.Teams.Billing do
   """
   def features_usage(team, site_ids \\ nil)
 
-  def features_usage(nil, nil), do: []
+  on_ee do
+    def features_usage(nil, nil), do: []
 
-  def features_usage(%Teams.Team{} = team, nil) do
-    owned_site_ids = team |> Teams.owned_sites() |> Enum.map(& &1.id)
-    features_usage(team, owned_site_ids)
-  end
-
-  def features_usage(%Teams.Team{} = team, owned_site_ids) when is_list(owned_site_ids) do
-    site_scoped_feature_usage = features_usage(nil, owned_site_ids)
-
-    stats_api_used? =
-      Repo.exists?(
-        from tm in Plausible.Teams.Membership,
-          as: :team_membership,
-          where: tm.team_id == ^team.id,
-          where:
-            exists(
-              from ak in Plausible.Auth.ApiKey,
-                where: ak.user_id == parent_as(:team_membership).user_id
-            )
-      )
-
-    if stats_api_used? do
-      site_scoped_feature_usage ++ [Feature.StatsAPI]
-    else
-      site_scoped_feature_usage
+    def features_usage(%Teams.Team{} = team, nil) do
+      owned_site_ids = Teams.owned_sites_ids(team)
+      features_usage(team, owned_site_ids)
     end
-  end
 
-  def features_usage(nil, site_ids) when is_list(site_ids) do
-    props_usage_q =
-      from s in Plausible.Site,
-        where: s.id in ^site_ids and fragment("cardinality(?) > 0", s.allowed_event_props)
+    def features_usage(%Teams.Team{} = team, owned_site_ids) when is_list(owned_site_ids) do
+      site_scoped_feature_usage = features_usage(nil, owned_site_ids)
 
-    revenue_goals_usage_q =
-      from g in Plausible.Goal,
-        where: g.site_id in ^site_ids and not is_nil(g.currency)
+      stats_api_used? =
+        Repo.exists?(
+          from tm in Plausible.Teams.Membership,
+            as: :team_membership,
+            where: tm.team_id == ^team.id,
+            where:
+              exists(
+                from ak in Plausible.Auth.ApiKey,
+                  where: ak.user_id == parent_as(:team_membership).user_id
+              )
+        )
 
-    queries =
-      on_ee do
-        funnels_usage_q = from f in "funnels", where: f.site_id in ^site_ids
+      site_scoped_feature_usage =
+        if stats_api_used? do
+          site_scoped_feature_usage ++ [Feature.StatsAPI]
+        else
+          site_scoped_feature_usage
+        end
 
-        [
-          {Feature.Props, props_usage_q},
-          {Feature.Funnels, funnels_usage_q},
-          {Feature.RevenueGoals, revenue_goals_usage_q},
-          {Feature.SiteSegments, Plausible.Segments.get_site_segments_usage_query(site_ids)}
-        ]
+      sites_api_used? =
+        Repo.exists?(
+          from tm in Plausible.Teams.Membership,
+            as: :team_membership,
+            where: tm.team_id == ^team.id,
+            where:
+              exists(
+                from ak in Plausible.Auth.ApiKey,
+                  where: ak.user_id == parent_as(:team_membership).user_id,
+                  where: "sites:provision:*" in ak.scopes
+              )
+        )
+
+      site_scoped_feature_usage =
+        if sites_api_used? do
+          site_scoped_feature_usage ++ [SitesAPI]
+        else
+          site_scoped_feature_usage
+        end
+
+      sso_used? =
+        case Plausible.Auth.SSO.get_integration_for(team) do
+          {:ok, _} -> true
+          _ -> false
+        end
+
+      if sso_used? do
+        site_scoped_feature_usage ++ [SSO]
       else
-        [
-          {Feature.Props, props_usage_q},
-          {Feature.RevenueGoals, revenue_goals_usage_q}
-        ]
+        site_scoped_feature_usage
       end
+    end
 
-    Enum.reduce(queries, [], fn {feature, query}, acc ->
-      if Repo.exists?(query), do: acc ++ [feature], else: acc
-    end)
+    def features_usage(nil, site_ids) when is_list(site_ids) do
+      shared_links_usage_q =
+        from l in Plausible.Site.SharedLink,
+          where:
+            l.site_id in ^site_ids and l.name not in ^Plausible.Sites.shared_link_special_names()
+
+      props_usage_q =
+        from s in Plausible.Site,
+          where: s.id in ^site_ids and fragment("cardinality(?) > 0", s.allowed_event_props)
+
+      funnels_usage_q = from f in "funnels", where: f.site_id in ^site_ids
+
+      revenue_goals_usage_q =
+        from g in Plausible.Goal,
+          where: g.site_id in ^site_ids and not is_nil(g.currency)
+
+      site_segments_usage_q =
+        from s in Plausible.Segments.Segment, where: s.site_id in ^site_ids and s.type == :site
+
+      [
+        {Feature.SharedLinks, shared_links_usage_q},
+        {Feature.Props, props_usage_q},
+        {Feature.Funnels, funnels_usage_q},
+        {Feature.RevenueGoals, revenue_goals_usage_q},
+        {Feature.SiteSegments, site_segments_usage_q}
+      ]
+      |> Enum.reduce([], fn {feature, query}, acc ->
+        if Repo.exists?(query), do: acc ++ [feature], else: acc
+      end)
+    end
+  else
+    def features_usage(_team, _site_ids), do: []
   end
 
   defp query_team_member_emails(team, pending_ownership_site_ids, exclude_emails) do
     pending_owner_memberships_q =
-      from s in Plausible.Site,
+      from s in Plausible.Site.regular(),
         inner_join: t in assoc(s, :team),
         inner_join: tm in assoc(t, :team_memberships),
         inner_join: u in assoc(tm, :user),
@@ -590,29 +670,34 @@ defmodule Plausible.Teams.Billing do
   end
 
   def allowed_features_for(nil) do
-    [Goals]
+    @free_features
   end
 
   def allowed_features_for(team) do
     team = Teams.with_subscription(team)
 
-    case Plans.get_subscription_plan(team.subscription) do
-      %EnterprisePlan{features: features} ->
-        features
+    features =
+      case Plans.get_subscription_plan(team.subscription) do
+        %EnterprisePlan{features: features} ->
+          features
 
-      %Plan{features: features} ->
-        features
+        %Plan{features: features} ->
+          features
 
-      :free_10k ->
-        [Goals, Props, StatsAPI]
+        :free_10k ->
+          [Props, StatsAPI, SharedLinks]
 
-      nil ->
-        if Teams.on_trial?(team) do
-          Feature.list()
-        else
-          [Goals]
-        end
-    end
+        nil ->
+          if Teams.on_trial?(team) do
+            Feature.list() -- [SitesAPI, SSO]
+          else
+            []
+          end
+      end
+
+    features
+    |> Enum.concat(@free_features)
+    |> Enum.uniq()
   end
 
   defp active_subscription_query(team) do

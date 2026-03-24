@@ -4,7 +4,7 @@ defmodule PlausibleWeb.Components.Billing.Notice do
   use PlausibleWeb, :component
 
   require Plausible.Billing.Subscription.Status
-  alias Plausible.Billing.{Subscription, Plans, Subscriptions, Feature}
+  alias Plausible.Billing.{Subscription, Plans, Subscriptions}
 
   def active_grace_period(assigns) do
     if assigns.enterprise? do
@@ -63,39 +63,36 @@ defmodule PlausibleWeb.Components.Billing.Notice do
     """
   end
 
-  attr(:current_role, :atom, required: true)
   attr(:current_team, :any, required: true)
-  attr(:feature_mod, :atom, required: true, values: Feature.list())
-  attr(:grandfathered?, :boolean, default: false)
-  attr(:rest, :global)
-
-  def premium_feature(assigns) do
-    ~H"""
-    <.notice
-      :if={@feature_mod.check_availability(@current_team) !== :ok}
-      class="rounded-t-md rounded-b-none"
-      title="Notice"
-      {@rest}
-    >
-      {account_label(@current_role)} does not have access to {@feature_mod.display_name()}. To get access to this feature,
-      <.upgrade_call_to_action current_role={@current_role} current_team={@current_team} />.
-    </.notice>
-    """
-  end
-
-  attr(:current_team, :any, required: true)
-  attr(:current_role, :atom, required: true)
+  attr(:current_user, :atom, required: true)
   attr(:limit, :integer, required: true)
   attr(:resource, :string, required: true)
   attr(:rest, :global)
 
   def limit_exceeded(assigns) do
     ~H"""
-    <.notice {@rest} title="Notice">
-      {account_label(@current_role)} is limited to {@limit} {@resource}. To increase this limit,
-      <.upgrade_call_to_action current_team={@current_team} current_role={@current_role} />.
+    <.notice
+      {@rest}
+      title={"#{account_label(@current_team)} is limited to #{pretty_print_resource_limit(@limit, @resource)}"}
+      data-test="limit-exceeded-notice"
+      theme={:gray}
+      show_icon={false}
+    >
+      To add more {@resource},
+      <PlausibleWeb.Components.Billing.upgrade_call_to_action
+        current_team={@current_team}
+        current_user={@current_user}
+      />
     </.notice>
     """
+  end
+
+  defp pretty_print_resource_limit(1 = _limit, resource_plural) do
+    "a single #{String.trim_trailing(resource_plural, "s")}"
+  end
+
+  defp pretty_print_resource_limit(limit, resource_plural) do
+    "#{limit} #{resource_plural}"
   end
 
   attr(:subscription, :map, required: true)
@@ -123,12 +120,15 @@ defmodule PlausibleWeb.Components.Billing.Notice do
         } = assigns
       ) do
     ~H"""
-    <aside id="global-subscription-cancelled-notice" class="container">
+    <aside
+      :if={not Subscriptions.expired?(@subscription)}
+      id="global-subscription-cancelled-notice"
+      class="container"
+    >
       <.notice
         dismissable_id={Plausible.Billing.cancelled_subscription_notice_dismiss_id(@subscription.id)}
         title={Plausible.Billing.subscription_cancelled_notice_title()}
         theme={:red}
-        class="shadow-md dark:shadow-none"
       >
         <.subscription_cancelled_notice_body subscription={@subscription} />
       </.notice>
@@ -145,11 +145,11 @@ defmodule PlausibleWeb.Components.Billing.Notice do
     assigns = assign(assigns, :container_id, "local-subscription-cancelled-notice")
 
     ~H"""
-    <aside id={@container_id} class="hidden">
+    <aside :if={not Subscriptions.expired?(@subscription)} id={@container_id} class="hidden">
       <.notice
         title={Plausible.Billing.subscription_cancelled_notice_title()}
         theme={:red}
-        class="shadow-md dark:shadow-none"
+        show_icon={false}
       >
         <.subscription_cancelled_notice_body subscription={@subscription} />
       </.notice>
@@ -177,10 +177,7 @@ defmodule PlausibleWeb.Components.Billing.Notice do
       ) do
     ~H"""
     <aside class={@class}>
-      <.notice
-        title={Plausible.Billing.subscription_past_due_notice_title()}
-        class="shadow-md dark:shadow-none"
-      >
+      <.notice title={Plausible.Billing.subscription_past_due_notice_title()}>
         There was a problem with your latest payment. Please update your payment information to keep using Plausible.<.link
           href={@subscription.update_url}
           class="whitespace-nowrap font-semibold"
@@ -203,7 +200,6 @@ defmodule PlausibleWeb.Components.Billing.Notice do
       <.notice
         title={Plausible.Billing.subscription_paused_notice_title()}
         theme={:red}
-        class="shadow-md dark:shadow-none"
       >
         Your subscription is paused due to failed payments. Please provide valid payment details to keep using Plausible.<.link
           href={@subscription.update_url}
@@ -264,48 +260,281 @@ defmodule PlausibleWeb.Components.Billing.Notice do
 
   def growth_grandfathered(assigns) do
     ~H"""
-    <div class="mt-8 space-y-3 text-sm leading-6 text-gray-600 text-justify dark:text-gray-100 xl:mt-10">
-      Your subscription has been grandfathered in at the same rate and terms as when you first joined. If you don't need the "Business" features, you're welcome to stay on this plan. You can adjust the pageview limit or change the billing frequency of this grandfathered plan. If you're interested in business features, you can upgrade to the new "Business" plan.
+    <div class="mt-8 space-y-3 text-sm leading-6 text-gray-600 text-justify dark:text-gray-100">
+      Your subscription has been grandfathered in at the same rate and terms as when you first joined. If you don't need the "Business" features, you're welcome to stay on this plan. You can adjust the pageview limit or change the billing frequency of this grandfathered plan. If you're interested in business features, you can upgrade to a "Business" plan.
     </div>
     """
   end
 
+  @doc """
+  Renders a usage notification banner based on the notification type.
+
+  This is used on the subscription settings page to show contextual
+  notifications about approaching or exceeded limits.
+  """
+  attr(:type, :atom, required: true)
+  attr(:team, :any, required: true)
+
+  def usage_notification(assigns)
+
+  def usage_notification(%{type: :pageview_approaching_limit} = assigns) do
+    ~H"""
+    <.notice title="You're close to your monthly pageview limit" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          No action is required. Occasional traffic spikes are normal, and we'll keep tracking your stats as usual. Upgrading now gives you room to grow if higher traffic continues.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :team_member_limit_reached} = assigns) do
+    ~H"""
+    <.notice title="You've reached your current team member limit" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4 items-start">
+        <p class="text-pretty">
+          Upgrading lets you add more as your team grows.
+        </p>
+        <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+          Upgrade
+        </.button_link>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :site_limit_reached} = assigns) do
+    ~H"""
+    <.notice title="You've reached your current site limit" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4 items-start">
+        <p class="text-pretty">
+          Upgrading lets you add more sites as you grow.
+        </p>
+        <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+          Upgrade
+        </.button_link>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :site_and_team_member_limit_reached} = assigns) do
+    ~H"""
+    <.notice
+      title="You've reached your current limits for team members and sites"
+      theme={:gray}
+      show_icon={false}
+    >
+      <div class="flex flex-col gap-4 items-start">
+        <p class="text-pretty">
+          Upgrading gives you room to grow.
+        </p>
+        <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+          Upgrade
+        </.button_link>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :traffic_exceeded_current_cycle} = assigns) do
+    ~H"""
+    <.notice title="Traffic has exceeded your plan limit this cycle" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          No action is required. Occasional traffic spikes are normal, but upgrading now gives you room to grow if higher traffic continues.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :traffic_exceeded_last_cycle} = assigns) do
+    ~H"""
+    <.notice title="Traffic exceeded your plan limit last cycle" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          No action is required. Occasional traffic spikes are normal, but upgrading now gives you room to grow if higher traffic continues.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :traffic_exceeded_sustained} = assigns) do
+    ~H"""
+    <.notice title="Upgrade required due to sustained higher traffic" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          To ensure uninterrupted access to your stats, please upgrade to a plan that fits your current usage.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :manual_lock_grace_period_active} = assigns) do
+    ~H"""
+    <.notice title="You've outgrown your custom plan" theme={:yellow} show_icon={false}>
+      <p class="text-pretty">
+        We'll contact you by email to discuss an updated custom plan based on your current usage.
+      </p>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :grace_period_active, team: team} = assigns) do
+    deadline_text =
+      case Plausible.Teams.GracePeriod.expires_in(team) do
+        {0, :hours} -> "within the hour"
+        {1, :hours} -> "within the next hour"
+        {n, :hours} -> "within the next #{n} hours"
+        {n, :days} -> "within the next #{n} days"
+      end
+
+    assigns = assign(assigns, :deadline_text, deadline_text)
+
+    ~H"""
+    <.notice title="Upgrade required due to sustained higher traffic" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          To ensure uninterrupted access to your stats, please upgrade to a plan that fits your current usage {@deadline_text}.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :dashboard_locked} = assigns) do
+    ~H"""
+    <.notice title="Dashboard access temporarily locked" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4">
+        <p class="text-pretty">
+          Your stats are still being tracked, but dashboard access is temporarily locked because your site exceeded your plan's pageview limit for two consecutive billing cycles. Upgrade to restore access.
+        </p>
+        <div class="flex gap-3 items-center">
+          <.button_link href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)} mt?={false}>
+            Upgrade
+          </.button_link>
+          <.button_link
+            href="https://plausible.io/docs/subscription-plans"
+            theme="secondary"
+            mt?={false}
+          >
+            Learn more
+          </.button_link>
+        </div>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(%{type: :trial_ended} = assigns) do
+    ~H"""
+    <.notice title="Your free trial has ended" theme={:gray} show_icon={false}>
+      <div class="flex flex-col gap-4 items-start">
+        <p class="text-pretty">
+          Upgrade to a monthly or yearly plan to continue accessing your sites.
+        </p>
+        <.button_link
+          id="upgrade-or-change-plan-link"
+          href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)}
+          mt?={false}
+        >
+          Choose a plan
+        </.button_link>
+      </div>
+    </.notice>
+    """
+  end
+
+  def usage_notification(assigns), do: ~H""
+
   defp subscription_cancelled_notice_body(assigns) do
-    if Subscriptions.expired?(assigns.subscription) do
-      ~H"""
+    ~H"""
+    <p>
+      You have access to your stats until <span class="font-semibold inline"><%= Calendar.strftime(@subscription.next_bill_date, "%b %-d, %Y") %></span>.
       <.link
         class="underline inline-block"
         href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)}
       >
         Upgrade your subscription
       </.link>
-      to get access to your stats again.
-      """
-    else
-      ~H"""
-      <p>
-        You have access to your stats until <span class="font-semibold inline"><%= Calendar.strftime(@subscription.next_bill_date, "%b %-d, %Y") %></span>.
-        <.link
-          class="underline inline-block"
-          href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)}
-        >
-          Upgrade your subscription
-        </.link>
-        to make sure you don't lose access.
-      </p>
-      <.lose_grandfathering_warning subscription={@subscription} />
-      """
-    end
+      to make sure you don't lose access.
+    </p>
+    <.lose_grandfathering_warning subscription={@subscription} />
+    """
   end
 
   defp lose_grandfathering_warning(%{subscription: subscription} = assigns) do
     plan = Plans.get_regular_plan(subscription, only_non_expired: true)
-    loses_grandfathering = plan && plan.generation < 4
+    loses_grandfathering? = plan && plan.generation < 5
 
-    assigns = assign(assigns, :loses_grandfathering, loses_grandfathering)
+    assigns = assign(assigns, :loses_grandfathering?, loses_grandfathering?)
 
     ~H"""
-    <p :if={@loses_grandfathering} class="mt-2">
+    <p :if={@loses_grandfathering?} class="mt-2">
       Please also note that by letting your subscription expire, you lose access to our grandfathered terms. If you want to subscribe again after that, your account will be offered the <.link
         href="https://plausible.io/#pricing"
         target="_blank"
@@ -316,47 +545,6 @@ defmodule PlausibleWeb.Components.Billing.Notice do
     """
   end
 
-  attr(:current_role, :atom)
-  attr(:current_team, :any)
-
-  defp upgrade_call_to_action(assigns) do
-    team = Plausible.Teams.with_subscription(assigns.current_team)
-
-    upgrade_assistance_required? =
-      case Plans.get_subscription_plan(team && team.subscription) do
-        %Plausible.Billing.Plan{kind: :business} -> true
-        %Plausible.Billing.EnterprisePlan{} -> true
-        _ -> false
-      end
-
-    cond do
-      assigns.current_role not in [:owner, :billing] ->
-        ~H"please reach out to the site owner to upgrade their subscription"
-
-      upgrade_assistance_required? ->
-        ~H"""
-        please contact <a href="mailto:hello@plausible.io" class="underline">hello@plausible.io</a>
-        to upgrade your subscription
-        """
-
-      true ->
-        ~H"""
-        please
-        <.link
-          class="underline inline-block"
-          href={Routes.billing_path(PlausibleWeb.Endpoint, :choose_plan)}
-        >
-          upgrade your subscription
-        </.link>
-        """
-    end
-  end
-
-  defp account_label(current_role) do
-    if current_role in [:owner, :billing] do
-      "Your account"
-    else
-      "The owner of this site"
-    end
-  end
+  defp account_label(%Plausible.Teams.Team{setup_complete: true}), do: "This team"
+  defp account_label(_team), do: "This account"
 end

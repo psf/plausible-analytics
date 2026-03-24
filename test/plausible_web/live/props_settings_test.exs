@@ -1,23 +1,58 @@
 defmodule PlausibleWeb.Live.PropsSettingsTest do
   use PlausibleWeb.ConnCase, async: true
-  use Plausible.Teams.Test
   import Phoenix.LiveViewTest
-  import Plausible.Test.Support.HTML
 
   describe "GET /:domain/settings/properties" do
     setup [:create_user, :log_in, :create_site]
 
     @tag :ee_only
-    test "premium feature notice renders", %{conn: conn, site: site, user: user} do
-      user
-      |> team_of()
-      |> Plausible.Teams.Team.end_trial()
-      |> Plausible.Repo.update!()
+    test "renders with locked content when subscription is insufficient", %{
+      conn: conn,
+      site: site,
+      user: user
+    } do
+      subscribe_to_growth_plan(user)
 
-      conn = get(conn, "/#{site.domain}/settings/properties")
-      resp = conn |> html_response(200) |> text()
+      lock_notice =
+        conn
+        |> get("/#{site.domain}/settings/properties")
+        |> html_response(200)
+        |> text_of_element("#lock-notice")
 
-      assert resp =~ "please upgrade your subscription"
+      assert lock_notice =~ "upgrade your subscription"
+    end
+
+    @tag :ee_only
+    test "does not lock content when subscription is sufficient", %{
+      conn: conn,
+      site: site,
+      user: user
+    } do
+      subscribe_to_business_plan(user)
+
+      lock_notice =
+        conn
+        |> get("/#{site.domain}/settings/properties")
+        |> html_response(200)
+        |> text_of_element("#lock-notice")
+
+      refute lock_notice =~ "upgrade your subscription"
+    end
+
+    @tag :ee_only
+    test "guest editors should be able to access prop settings", %{site: site, conn: conn} do
+      guest_user = new_user()
+      add_guest(site, user: guest_user, role: :editor)
+
+      {:ok, conn: conn} = log_in(%{user: guest_user, conn: conn})
+
+      lock_notice =
+        conn
+        |> get("/#{site.domain}/settings/properties")
+        |> html_response(200)
+        |> text_of_element("#lock-notice")
+
+      refute lock_notice =~ "upgrade your subscription"
     end
 
     test "lists props for the site and renders links", %{conn: conn, site: site} do
@@ -25,7 +60,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
       conn = get(conn, "/#{site.domain}/settings/properties")
 
       resp = html_response(conn, 200)
-      assert resp =~ "Attach Custom Properties"
+      assert resp =~ "Attach custom properties"
 
       assert element_exists?(
                resp,
@@ -35,7 +70,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
       assert resp =~ "amount"
       assert resp =~ "logged_in"
       assert resp =~ "is_customer"
-      refute resp =~ "please upgrade your subscription"
+      refute resp =~ "upgrade your subscription"
     end
 
     test "lists props with disallow actions", %{conn: conn, site: site} do
@@ -54,7 +89,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
     test "if no props are allowed, a proper info is displayed", %{conn: conn, site: site} do
       conn = get(conn, "/#{site.domain}/settings/properties")
       resp = html_response(conn, 200)
-      assert resp =~ "No properties configured for this site"
+      assert resp =~ "Create a custom property"
     end
 
     test "if props are enabled, no info about missing props is displayed", %{
@@ -64,7 +99,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
       {:ok, site} = Plausible.Props.allow(site, ["amount", "logged_in", "is_customer"])
       conn = get(conn, "/#{site.domain}/settings/properties")
       resp = html_response(conn, 200)
-      refute resp =~ "No properties configured for this site"
+      refute resp =~ "Create a custom property"
     end
 
     test "add property button is rendered", %{conn: conn, site: site} do
@@ -74,6 +109,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
     end
 
     test "search props input is rendered", %{conn: conn, site: site} do
+      {:ok, site} = Plausible.Props.allow(site, ["amount", "logged_in", "is_customer"])
       conn = get(conn, "/#{site.domain}/settings/properties")
       resp = html_response(conn, 200)
       assert element_exists?(resp, ~s/input[type="text"]#filter-text/)
@@ -81,18 +117,77 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
     end
   end
 
-  # validating input
-  # clicking suggestions fills out input
-  # adding props
-  # error when reached props limit
-  # clearserror when fixed input
-  # removal
-  # removal shows confirmation
-  # allow existing props: shows/hides
-  # after adding all suggestions no allow existing props
+  on_ee do
+    describe "GET /:domain/settings/properties - consolidated views" do
+      setup [:create_user, :create_team, :log_in]
+
+      setup %{team: team} = context do
+        new_site(team: team)
+        new_site(team: team)
+
+        {:ok, Map.put(context, :consolidated_view, new_consolidated_view(team))}
+      end
+
+      test "lists existing props and renders links", %{
+        conn: conn,
+        consolidated_view: consolidated_view
+      } do
+        {:ok, consolidated_view} =
+          Plausible.Props.allow(consolidated_view, ["amount", "logged_in", "is_customer"])
+
+        conn = get(conn, "/#{consolidated_view.domain}/settings/properties")
+
+        resp = html_response(conn, 200)
+        assert resp =~ "Attach custom properties"
+
+        assert element_exists?(
+                 resp,
+                 ~s|a[href="https://plausible.io/docs/custom-props/introduction"]|
+               )
+
+        assert resp =~ "amount"
+        assert resp =~ "logged_in"
+        assert resp =~ "is_customer"
+        refute resp =~ "upgrade your subscription"
+      end
+
+      test "if no props are allowed, a proper info is displayed", %{
+        conn: conn,
+        consolidated_view: consolidated_view
+      } do
+        conn = get(conn, "/#{consolidated_view.domain}/settings/properties")
+        resp = html_response(conn, 200)
+        assert resp =~ "Create a custom property"
+      end
+
+      test "add property button and search input are rendered", %{
+        conn: conn,
+        consolidated_view: consolidated_view
+      } do
+        {:ok, consolidated_view} =
+          Plausible.Props.allow(consolidated_view, ["amount", "logged_in", "is_customer"])
+
+        conn = get(conn, "/#{consolidated_view.domain}/settings/properties")
+        resp = html_response(conn, 200)
+        assert element_exists?(resp, ~s/button[phx-click="add-prop"]/)
+        assert element_exists?(resp, ~s/input[type="text"]#filter-text/)
+        assert element_exists?(resp, ~s/form[phx-change="filter"]#filter-form/)
+      end
+    end
+  end
 
   describe "PropsSettings live view" do
     setup [:create_user, :log_in, :create_site]
+
+    test "allows dashboard toggle", %{conn: conn, site: site} do
+      lv = get_liveview(conn, site)
+      lv |> element("#feature-props-toggle button") |> render_click()
+      assert render(lv) =~ "Custom Properties are now hidden from your dashboard"
+      assert Plausible.Billing.Feature.Props.opted_out?(Plausible.Repo.reload!(site))
+      lv |> element("#feature-props-toggle button") |> render_click()
+      assert render(lv) =~ "Custom Properties are now visible again on your dashboard"
+      refute Plausible.Billing.Feature.Props.opted_out?(Plausible.Repo.reload!(site))
+    end
 
     test "allows prop removal", %{conn: conn, site: site} do
       {:ok, site} = Plausible.Props.allow(site, ["amount", "logged_in"])
@@ -145,6 +240,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
     end
 
     test "allows resetting filter text via no match link", %{conn: conn, site: site} do
+      {:ok, site} = Plausible.Props.allow(site, ["amount", "logged_in", "is_customer"])
       lv = get_liveview(conn, site)
       html = type_into_search(lv, "Definitely this is not going to render any matches")
 
@@ -161,7 +257,7 @@ defmodule PlausibleWeb.Live.PropsSettingsTest do
       lv = get_liveview(conn, site)
       html = lv |> element(~s/button[phx-click="add-prop"]/) |> render_click()
 
-      assert html =~ "Add Property for #{site.domain}"
+      assert html =~ "Add property for #{site.domain}"
 
       assert element_exists?(
                html,

@@ -3,7 +3,7 @@ defmodule Plausible.Repo do
     otp_app: :plausible,
     adapter: Ecto.Adapters.Postgres
 
-  use Scrivener, page_size: 24
+  use Plausible.Audit.Repo
 
   defmacro __using__(_) do
     quote do

@@ -1,14 +1,16 @@
 import React from 'react'
 import { useAppNavigate } from '../../navigation/use-app-navigate'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import Chart from 'chart.js/auto'
 import GraphTooltip from './graph-tooltip'
 import { buildDataSet, METRIC_LABELS, hasMultipleYears } from './graph-util'
 import dateFormatter from './date-formatter'
-import FadeIn from '../../fade-in'
 import classNames from 'classnames'
 import { hasConversionGoalFilter } from '../../util/filters'
 import { MetricFormatterShort } from '../reports/metric-formatter'
+import { UIMode, useTheme } from '../../theme-context'
+import { Transition } from '@headlessui/react'
+import equal from 'fast-deep-equal'
 
 const calculateMaximumY = function (dataset) {
   const yAxisValues = dataset
@@ -25,25 +27,69 @@ const calculateMaximumY = function (dataset) {
 class LineGraph extends React.Component {
   constructor(props) {
     super(props)
-    this.regenerateChart = this.regenerateChart.bind(this)
     this.updateWindowDimensions = this.updateWindowDimensions.bind(this)
   }
 
   getGraphMetric() {
     let metric = this.props.graphData.metric
 
-    if (metric == 'visitors' && hasConversionGoalFilter(this.props.query)) {
+    if (
+      metric == 'visitors' &&
+      hasConversionGoalFilter(this.props.dashboardState)
+    ) {
       return 'conversions'
     } else {
       return metric
     }
   }
 
-  regenerateChart() {
-    const { graphData, query } = this.props
+  buildXTicksCallback() {
+    const { graphData, dashboardState } = this.props
+    const shouldShowYear = hasMultipleYears(graphData)
+    return function (val, _index, _ticks) {
+      if (this.getLabelForValue(val) == '__blank__') return ''
+
+      if (graphData.interval === 'hour' && dashboardState.period !== 'day') {
+        const date = dateFormatter({
+          interval: 'day',
+          longForm: false,
+          period: dashboardState.period,
+          shouldShowYear
+        })(this.getLabelForValue(val))
+
+        const hour = dateFormatter({
+          interval: graphData.interval,
+          longForm: false,
+          period: dashboardState.period,
+          shouldShowYear
+        })(this.getLabelForValue(val))
+
+        return `${date}, ${hour}`
+      }
+
+      if (
+        graphData.interval === 'minute' &&
+        dashboardState.period !== 'realtime'
+      ) {
+        return dateFormatter({
+          interval: 'hour',
+          longForm: false,
+          period: dashboardState.period
+        })(this.getLabelForValue(val))
+      }
+
+      return dateFormatter({
+        interval: graphData.interval,
+        longForm: false,
+        period: dashboardState.period,
+        shouldShowYear
+      })(this.getLabelForValue(val))
+    }
+  }
+
+  updateChart() {
+    const { graphData, dashboardState, theme } = this.props
     const metric = this.getGraphMetric()
-    const graphEl = document.getElementById('main-graph-canvas')
-    this.ctx = graphEl.getContext('2d')
     const dataSet = buildDataSet(
       graphData.plot,
       graphData.comparison_plot,
@@ -52,12 +98,39 @@ class LineGraph extends React.Component {
       METRIC_LABELS[metric]
     )
 
-    return new Chart(this.ctx, {
+    const maxY = calculateMaximumY(dataSet)
+
+    this.chart.data.labels = graphData.labels
+    this.chart.data.datasets = dataSet
+    this.chart.options.scales.y.suggestedMax = maxY
+    this.chart.options.scales.yComparison.suggestedMax = maxY
+    this.chart.options.scales.y.ticks.callback = MetricFormatterShort[metric]
+    this.chart.options.scales.y.ticks.color =
+      theme.mode === UIMode.dark ? 'rgb(161, 161, 170)' : undefined
+    this.chart.options.scales.y.grid.color =
+      theme.mode === UIMode.dark
+        ? 'rgba(39, 39, 42, 0.75)'
+        : 'rgb(236, 236, 238)'
+    this.chart.options.scales.x.ticks.color =
+      theme.mode === UIMode.dark ? 'rgb(161, 161, 170)' : undefined
+    this.chart.options.scales.x.ticks.callback = this.buildXTicksCallback()
+    this.chart.options.plugins.tooltip.external = GraphTooltip(
+      graphData,
+      metric,
+      dashboardState,
+      theme
+    )
+
+    this.chart.update()
+  }
+
+  regenerateChart() {
+    const graphEl = document.getElementById('main-graph-canvas')
+    this.ctx = graphEl.getContext('2d')
+
+    this.chart = new Chart(this.ctx, {
       type: 'line',
-      data: {
-        labels: graphData.labels,
-        datasets: dataSet
-      },
+      data: { labels: [], datasets: [] },
       options: {
         animation: false,
         plugins: {
@@ -67,7 +140,7 @@ class LineGraph extends React.Component {
             mode: 'index',
             intersect: false,
             position: 'average',
-            external: GraphTooltip(graphData, metric, query)
+            external: () => {}
           }
         },
         responsive: true,
@@ -81,83 +154,21 @@ class LineGraph extends React.Component {
         scales: {
           y: {
             min: 0,
-            suggestedMax: calculateMaximumY(dataSet),
-            ticks: {
-              callback: MetricFormatterShort[metric],
-              color: this.props.darkTheme ? 'rgb(243, 244, 246)' : undefined
-            },
-            grid: {
-              zeroLineColor: 'transparent',
-              drawBorder: false
-            }
+            ticks: {},
+            grid: { zeroLineColor: 'transparent', drawBorder: false }
           },
-          yComparison: {
-            min: 0,
-            suggestedMax: calculateMaximumY(dataSet),
-            display: false,
-            grid: { display: false }
-          },
-          x: {
-            grid: { display: false },
-            ticks: {
-              callback: function (val, _index, _ticks) {
-                if (this.getLabelForValue(val) == '__blank__') return ''
-
-                const shouldShowYear = hasMultipleYears(graphData)
-
-                if (graphData.interval === 'hour' && query.period !== 'day') {
-                  const date = dateFormatter({
-                    interval: 'day',
-                    longForm: false,
-                    period: query.period,
-                    shouldShowYear
-                  })(this.getLabelForValue(val))
-
-                  const hour = dateFormatter({
-                    interval: graphData.interval,
-                    longForm: false,
-                    period: query.period,
-                    shouldShowYear
-                  })(this.getLabelForValue(val))
-
-                  // Returns a combination of date and hour. This is because
-                  // small intervals like hour may return multiple days
-                  // depending on the query period.
-                  return `${date}, ${hour}`
-                }
-
-                if (
-                  graphData.interval === 'minute' &&
-                  query.period !== 'realtime'
-                ) {
-                  return dateFormatter({
-                    interval: 'hour',
-                    longForm: false,
-                    period: query.period
-                  })(this.getLabelForValue(val))
-                }
-
-                return dateFormatter({
-                  interval: graphData.interval,
-                  longForm: false,
-                  period: query.period,
-                  shouldShowYear
-                })(this.getLabelForValue(val))
-              },
-              color: this.props.darkTheme ? 'rgb(243, 244, 246)' : undefined
-            }
-          }
+          yComparison: { min: 0, display: false, grid: { display: false } },
+          x: { grid: { display: false }, ticks: {} }
         },
-        interaction: {
-          mode: 'index',
-          intersect: false
-        }
+        interaction: { mode: 'index', intersect: false }
       }
     })
+
+    this.updateChart()
   }
 
   repositionTooltip(e) {
-    const tooltipEl = document.getElementById('chartjs-tooltip')
+    const tooltipEl = document.getElementById('chartjs-tooltip-main')
     if (tooltipEl && window.innerWidth >= 768) {
       if (e.clientX > 0.66 * window.innerWidth) {
         tooltipEl.style.right =
@@ -174,35 +185,33 @@ class LineGraph extends React.Component {
 
   componentDidMount() {
     if (this.props.graphData) {
-      this.chart = this.regenerateChart()
+      this.regenerateChart()
     }
     window.addEventListener('mousemove', this.repositionTooltip)
   }
 
   componentDidUpdate(prevProps) {
-    const { graphData, darkTheme } = this.props
-    const tooltip = document.getElementById('chartjs-tooltip')
-
-    if (
-      graphData !== prevProps.graphData ||
-      darkTheme !== prevProps.darkTheme
-    ) {
-      if (graphData) {
-        if (this.chart) {
-          this.chart.destroy()
-        }
-        this.chart = this.regenerateChart()
-        this.chart.update()
-      }
-
+    const { graphData, theme } = this.props
+    const tooltip = document.getElementById('chartjs-tooltip-main')
+    const dataChanged = !equal(graphData, prevProps.graphData)
+    if (dataChanged || theme.mode !== prevProps.theme.mode) {
       if (tooltip) {
         tooltip.style.display = 'none'
+      }
+
+      if (graphData) {
+        if (this.chart) {
+          this.updateChart()
+        } else {
+          this.regenerateChart()
+        }
       }
     }
 
     if (!graphData) {
       if (this.chart) {
         this.chart.destroy()
+        this.chart = null
       }
 
       if (tooltip) {
@@ -213,7 +222,7 @@ class LineGraph extends React.Component {
 
   componentWillUnmount() {
     // Ensure that the tooltip doesn't hang around when we are loading more data
-    const tooltip = document.getElementById('chartjs-tooltip')
+    const tooltip = document.getElementById('chartjs-tooltip-main')
     if (tooltip) {
       tooltip.style.opacity = 0
       tooltip.style.display = 'none'
@@ -234,39 +243,58 @@ class LineGraph extends React.Component {
     const element = this.chart.getElementsAtEventForMode(e, 'index', {
       intersect: false
     })[0]
-    const date =
-      this.props.graphData.labels[element.index] ||
-      this.props.graphData.comparison_labels[element.index]
+    const date = this.props.graphData.labels[element.index]
+
+    if (date === '__blank__') {
+      return
+    }
 
     if (this.props.graphData.interval === 'month') {
       this.props.navigate({
-        search: (search) => ({ ...search, period: 'month', date })
+        search: (searchRecord) => ({ ...searchRecord, period: 'month', date })
       })
     } else if (this.props.graphData.interval === 'day') {
       this.props.navigate({
-        search: (search) => ({ ...search, period: 'day', date })
+        search: (searchRecord) => ({ ...searchRecord, period: 'day', date })
       })
     }
   }
 
   render() {
     const { graphData } = this.props
-    const canvasClass = classNames('mt-4 select-none', {
+    const canvasClass = classNames('select-none', {
       'cursor-pointer': !['minute', 'hour'].includes(graphData?.interval)
     })
 
     return (
-      <FadeIn show={graphData}>
-        <div className="relative h-96 print:h-auto print:pb-8 w-full z-0">
-          <canvas id="main-graph-canvas" className={canvasClass}></canvas>
-        </div>
-      </FadeIn>
+      <Transition
+        show={true}
+        appear={true}
+        as={React.Fragment}
+        enter="transition ease-in duration-100"
+        enterFrom="opacity-0"
+        enterTo="opacity-100"
+      >
+        <canvas id="main-graph-canvas" className={canvasClass} />
+      </Transition>
     )
   }
 }
 
+export function LineGraphContainer(props) {
+  return <div className="relative my-4 h-92 w-full z-0">{props.children}</div>
+}
+
 export default function LineGraphWrapped(props) {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const navigate = useAppNavigate()
-  return <LineGraph {...props} navigate={navigate} query={query} />
+  const theme = useTheme()
+  return (
+    <LineGraph
+      {...props}
+      navigate={navigate}
+      dashboardState={dashboardState}
+      theme={theme}
+    />
+  )
 }

@@ -8,11 +8,11 @@ import UserContextProvider, {
 } from '../js/dashboard/user-context'
 import { MemoryRouter, MemoryRouterProps } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import QueryContextProvider from '../js/dashboard/query-context'
+import DashboardStateContextProvider from '../js/dashboard/dashboard-state-context'
 import { getRouterBasepath } from '../js/dashboard/router'
 import { RoutelessModalsContextProvider } from '../js/dashboard/navigation/routeless-modals-context'
 import { SegmentsContextProvider } from '../js/dashboard/filtering/segments-context'
-import { SavedSegments } from '../js/dashboard/filtering/segments'
+import { SavedSegment, SavedSegments } from '../js/dashboard/filtering/segments'
 
 type TestContextProvidersProps = {
   children: ReactNode
@@ -20,6 +20,7 @@ type TestContextProvidersProps = {
   siteOptions?: Partial<PlausibleSite>
   user?: UserContextValue
   preloaded?: { segments?: SavedSegments }
+  limitedToSegment?: SavedSegment | null
 }
 
 export const DEFAULT_SITE: PlausibleSite = {
@@ -42,7 +43,8 @@ export const DEFAULT_SITE: PlausibleSite = {
   isDbip: false,
   flags: {},
   validIntervalsByPeriod: {},
-  shared: false
+  shared: false,
+  isConsolidatedView: false
 }
 
 export const TestContextProviders = ({
@@ -50,6 +52,7 @@ export const TestContextProviders = ({
   routerProps,
   siteOptions,
   preloaded,
+  limitedToSegment,
   user
 }: TestContextProvidersProps) => {
   const site = { ...DEFAULT_SITE, ...siteOptions }
@@ -68,9 +71,19 @@ export const TestContextProviders = ({
     // <ThemeContextProvider> not interactive component, default value is suitable
     <SiteContextProvider site={site}>
       <UserContextProvider
-        user={user ?? { role: Role.editor, loggedIn: true, id: 1 }}
+        user={
+          user ?? {
+            role: Role.editor,
+            loggedIn: true,
+            id: 1,
+            team: { identifier: null, hasConsolidatedView: false }
+          }
+        }
       >
-        <SegmentsContextProvider preloadedSegments={preloaded?.segments ?? []}>
+        <SegmentsContextProvider
+          limitedToSegment={limitedToSegment ?? null}
+          preloadedSegments={preloaded?.segments ?? []}
+        >
           <MemoryRouter
             basename={getRouterBasepath(site)}
             initialEntries={defaultInitialEntries}
@@ -78,7 +91,9 @@ export const TestContextProviders = ({
           >
             <QueryClientProvider client={queryClient}>
               <RoutelessModalsContextProvider>
-                <QueryContextProvider>{children}</QueryContextProvider>
+                <DashboardStateContextProvider>
+                  {children}
+                </DashboardStateContextProvider>
               </RoutelessModalsContextProvider>
             </QueryClientProvider>
           </MemoryRouter>

@@ -46,7 +46,9 @@ defmodule PlausibleWeb.StatsController do
 
   alias Plausible.Sites
   alias Plausible.Stats.{Filters, Query}
+  alias Plausible.Teams
   alias PlausibleWeb.Api
+  alias Plausible.Billing.Feature.SharedLinks
 
   plug(PlausibleWeb.Plugs.AuthorizeSiteAccess when action in [:stats, :csv_export])
 
@@ -55,14 +57,26 @@ defmodule PlausibleWeb.StatsController do
     site_role = conn.assigns[:site_role]
     current_user = conn.assigns[:current_user]
     stats_start_date = Plausible.Sites.stats_start_date(site)
-    can_see_stats? = not Sites.locked?(site) or site_role == :super_admin
-    demo = site.domain == PlausibleWeb.Endpoint.host()
+    can_see_stats? = not Teams.locked?(site.team) or site_role == :super_admin
+    demo = site.domain == "plausible.io"
     dogfood_page_path = if demo, do: "/#{site.domain}", else: "/:dashboard"
-    skip_to_dashboard? = conn.params["skip_to_dashboard"] == "true"
+
+    consolidated_view? = Plausible.Sites.consolidated?(site)
+
+    consolidated_view_available? =
+      on_ee(do: Plausible.ConsolidatedView.ok_to_display?(site.team), else: false)
+
+    team_identifier = site.team.identifier
+
+    skip_to_dashboard? =
+      conn.params["skip_to_dashboard"] == "true" or consolidated_view?
 
     {:ok, segments} = Plausible.Segments.get_all_for_site(site, site_role)
 
     cond do
+      consolidated_view? and not consolidated_view_available? and site_role != :super_admin ->
+        redirect(conn, to: Routes.site_path(conn, :index))
+
       (stats_start_date && can_see_stats?) || (can_see_stats? && skip_to_dashboard?) ->
         flags = get_flags(current_user, site)
 
@@ -81,16 +95,19 @@ defmodule PlausibleWeb.StatsController do
           demo: demo,
           flags: flags,
           is_dbip: is_dbip(),
-          dogfood_page_path: dogfood_page_path,
           segments: segments,
           load_dashboard_js: true,
-          hide_footer?: if(ce?() || demo, do: false, else: site_role != :public)
+          hide_footer?: if(ce?() || demo, do: false, else: site_role != :public),
+          consolidated_view?: consolidated_view?,
+          consolidated_view_available?: consolidated_view_available?,
+          team_identifier: team_identifier,
+          limited_to_segment_id: nil
         )
 
       !stats_start_date && can_see_stats? ->
-        redirect(conn, external: Routes.site_path(conn, :verification, site.domain))
+        redirect(conn, to: Routes.site_path(conn, :verification, site.domain))
 
-      Sites.locked?(site) ->
+      Teams.locked?(site.team) ->
         site = Plausible.Repo.preload(site, :owners)
         render(conn, "site_locked.html", site: site, dogfood_page_path: dogfood_page_path)
     end
@@ -117,7 +134,7 @@ defmodule PlausibleWeb.StatsController do
   def csv_export(conn, params) do
     if is_nil(params["interval"]) or Plausible.Stats.Interval.valid?(params["interval"]) do
       site = Plausible.Repo.preload(conn.assigns.site, :owners)
-      query = Query.from(site, params, debug_metadata(conn))
+      query = Query.from(site, params, debug_metadata: debug_metadata(conn))
 
       date_range = Query.date_range(query)
 
@@ -242,13 +259,14 @@ defmodule PlausibleWeb.StatsController do
   """
   def shared_link(conn, %{"domain" => domain, "auth" => auth}) do
     case find_shared_link(domain, auth) do
-      {:password_protected, shared_link} ->
-        render_password_protected_shared_link(conn, shared_link)
+      {:ok, shared_link} ->
+        if Plausible.Site.SharedLink.password_protected?(shared_link) do
+          render_password_protected_shared_link(conn, shared_link)
+        else
+          render_shared_link(conn, shared_link)
+        end
 
-      {:unlisted, shared_link} ->
-        render_shared_link(conn, shared_link)
-
-      :not_found ->
+      {:error, :not_found} ->
         render_error(conn, 404)
     end
   end
@@ -264,7 +282,9 @@ defmodule PlausibleWeb.StatsController do
       )
 
     if shared_link do
-      new_link_format = Routes.stats_path(conn, :shared_link, shared_link.site.domain, auth: slug)
+      new_link_format =
+        Routes.stats_path(conn, :shared_link, shared_link.site.domain, [], auth: slug)
+
       redirect(conn, to: new_link_format)
     else
       render_error(conn, 404)
@@ -275,17 +295,38 @@ defmodule PlausibleWeb.StatsController do
     render_error(conn, 400)
   end
 
-  defp render_password_protected_shared_link(conn, shared_link) do
-    with conn <- Plug.Conn.fetch_cookies(conn),
-         {:ok, token} <- Map.fetch(conn.req_cookies, shared_link_cookie_name(shared_link.slug)),
+  def validate_shared_link_password(conn, shared_link) do
+    with {:ok, token} <- Map.fetch(conn.req_cookies, shared_link_cookie_name(shared_link.slug)),
          {:ok, %{slug: token_slug}} <- Plausible.Auth.Token.verify_shared_link(token),
          true <- token_slug == shared_link.slug do
-      render_shared_link(conn, shared_link)
+      {:ok, shared_link}
     else
-      _e ->
+      _e -> {:error, :unauthorized}
+    end
+  end
+
+  defp render_password_protected_shared_link(conn, shared_link) do
+    conn = Plug.Conn.fetch_cookies(conn)
+
+    # discard untrustworthy return_to given from query params
+    trimmed_query_string = conn.query_string |> omit_from_query_string("return_to")
+    star_path_fragment = serialize_star_path_as_query_string_fragment(conn)
+
+    # set valid return_to if star path is set
+    query_string =
+      [trimmed_query_string, star_path_fragment]
+      |> Enum.filter(fn v -> is_binary(v) and String.length(v) > 0 end)
+      |> Enum.join("&")
+
+    case validate_shared_link_password(conn, shared_link) do
+      {:ok, shared_link} ->
+        render_shared_link(conn, shared_link)
+
+      _ ->
         conn
         |> render("shared_link_password.html",
           link: shared_link,
+          query_string: query_string,
           dogfood_page_path: "/share/:dashboard"
         )
     end
@@ -295,21 +336,19 @@ defmodule PlausibleWeb.StatsController do
     link_query =
       from(link in Plausible.Site.SharedLink,
         inner_join: site in assoc(link, :site),
+        inner_join: team in assoc(site, :team),
         where: link.slug == ^auth,
         where: site.domain == ^domain,
         limit: 1,
-        preload: [site: site]
+        preload: [site: {site, team: team}]
       )
 
     case Repo.one(link_query) do
-      %Plausible.Site.SharedLink{password_hash: hash} = link when not is_nil(hash) ->
-        {:password_protected, link}
-
       %Plausible.Site.SharedLink{} = link ->
-        {:unlisted, link}
+        {:ok, link}
 
       nil ->
-        :not_found
+        {:error, :not_found}
     end
   end
 
@@ -322,14 +361,36 @@ defmodule PlausibleWeb.StatsController do
       if Plausible.Auth.Password.match?(password, shared_link.password_hash) do
         token = Plausible.Auth.Token.sign_shared_link(slug)
 
+        star_path = parse_star_path(conn)
+
+        # The filter query params format used by the FE breaks when it passes through Phoenix / Plug.Conn decode/encode.
+        # This function works around that by using the original query string.
+        query_string_fragment =
+          get_rest_of_query_string(conn)
+          # omitted because return_to param was needed only for this function
+          |> omit_from_query_string("return_to")
+          # omitted because `auth: slug` query param is set definitively below
+          |> omit_from_query_string("auth")
+
         conn
         |> put_resp_cookie(shared_link_cookie_name(slug), token)
-        |> redirect(to: "/share/#{URI.encode_www_form(shared_link.site.domain)}?auth=#{slug}")
+        |> redirect(
+          to:
+            Routes.stats_path(
+              conn,
+              :shared_link,
+              shared_link.site.domain,
+              star_path,
+              auth: slug
+            ) <>
+              query_string_fragment
+        )
       else
         conn
         |> render("shared_link_password.html",
           link: shared_link,
           error: "Incorrect password. Please try again.",
+          query_string: conn.query_string,
           dogfood_page_path: "/share/:dashboard"
         )
       end
@@ -338,19 +399,107 @@ defmodule PlausibleWeb.StatsController do
     end
   end
 
+  defp serialize_star_path_as_query_string_fragment(conn) do
+    star_path = conn.path_params["path"]
+
+    if length(star_path) > 0 do
+      # make the path start with a /
+      # to be able to reject values that don't start with a /
+      %{"return_to" => "/#{Enum.join(star_path, "/")}"} |> URI.encode_query()
+    else
+      nil
+    end
+  end
+
+  defp parse_star_path(conn) do
+    case conn.query_params["return_to"] do
+      # omit prefix added in `serialize_star_path_as_query_string_fragment`
+      "/" <> return_to ->
+        return_to
+        |> String.split("/")
+        # disallow constructing links that navigate up
+        |> Enum.filter(fn part -> part !== ".." end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp get_rest_of_query_string(conn) when conn.query_string in [nil, ""], do: ""
+
+  defp get_rest_of_query_string(conn), do: "&#{conn.query_string}"
+
+  defp omit_from_query_string(query_string, key) do
+    query_string
+    |> String.split("&")
+    |> Enum.reject(fn key_and_value ->
+      key_and_value == key || String.starts_with?(key_and_value, "#{key}=")
+    end)
+    |> Enum.join("&")
+  end
+
   defp render_shared_link(conn, shared_link) do
+    shared_links_feature_access? =
+      SharedLinks.check_availability(shared_link.site.team) == :ok or
+        shared_link.name in Plausible.Sites.shared_link_special_names()
+
     cond do
-      !shared_link.site.locked ->
+      Teams.locked?(shared_link.site.team) ->
+        owners = Plausible.Repo.preload(shared_link.site, :owners)
+
+        render(conn, "site_locked.html",
+          owners: owners,
+          site: shared_link.site,
+          dogfood_page_path: "/share/:dashboard"
+        )
+
+      not shared_links_feature_access? ->
+        owners = Plausible.Repo.preload(shared_link.site, :owners)
+
+        render(conn, "site_locked.html",
+          only_shared_link_access_missing?: true,
+          owners: owners,
+          site: shared_link.site,
+          dogfood_page_path: "/share/:dashboard"
+        )
+
+      not Teams.locked?(shared_link.site.team) ->
         current_user = conn.assigns[:current_user]
         site_role = get_fallback_site_role(conn)
-        shared_link = Plausible.Repo.preload(shared_link, site: :owners)
+        shared_link = Plausible.Repo.preload(shared_link, :segment, site: [:owners])
         stats_start_date = Plausible.Sites.stats_start_date(shared_link.site)
 
         flags = get_flags(current_user, shared_link.site)
 
-        {:ok, segments} = Plausible.Segments.get_all_for_site(shared_link.site, site_role)
+        limited_to_segment_id =
+          if Plausible.Site.SharedLink.limited_to_segment?(shared_link) do
+            shared_link.segment.id
+          else
+            nil
+          end
+
+        segments =
+          if is_nil(limited_to_segment_id) do
+            {:ok, segments} = Plausible.Segments.get_all_for_site(shared_link.site, site_role)
+            segments
+          else
+            shared_link.segment
+            |> Map.take([
+              :id,
+              :name,
+              :type,
+              :inserted_at,
+              :updated_at,
+              :segment_data
+            ])
+            |> List.wrap()
+          end
 
         embedded? = conn.params["embed"] == "true"
+
+        true = Plausible.Sites.regular?(shared_link.site)
+
+        team_identifier = shared_link.site.team.identifier
 
         conn
         |> put_resp_header("x-robots-tag", "noindex, nofollow")
@@ -366,7 +515,6 @@ defmodule PlausibleWeb.StatsController do
           native_stats_start_date: NaiveDateTime.to_date(shared_link.site.native_stats_start_at),
           title: title(conn, shared_link.site),
           demo: false,
-          dogfood_page_path: "/share/:dashboard",
           shared_link_auth: shared_link.slug,
           embedded: embedded?,
           background: conn.params["background"],
@@ -375,16 +523,12 @@ defmodule PlausibleWeb.StatsController do
           is_dbip: is_dbip(),
           segments: segments,
           load_dashboard_js: true,
-          hide_footer?: if(ce?(), do: embedded?, else: embedded? || site_role != :public)
-        )
-
-      Sites.locked?(shared_link.site) ->
-        owners = Plausible.Repo.preload(shared_link.site, :owners)
-
-        render(conn, "site_locked.html",
-          owners: owners,
-          site: shared_link.site,
-          dogfood_page_path: "/share/:dashboard"
+          hide_footer?: if(ce?(), do: embedded?, else: embedded? || site_role != :public),
+          # no shared links for consolidated views
+          consolidated_view?: false,
+          consolidated_view_available?: false,
+          team_identifier: team_identifier,
+          limited_to_segment_id: limited_to_segment_id
         )
     end
   end

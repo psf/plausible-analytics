@@ -12,16 +12,15 @@ import {
   XMarkIcon
 } from '@heroicons/react/24/outline'
 import { ChevronDownIcon } from '@heroicons/react/20/solid'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import { useRoutelessModalsContext } from '../../navigation/routeless-modals-context'
 import { SavedSegment } from '../../filtering/segments'
-import { DashboardQuery } from '../../query'
+import { DashboardState } from '../../dashboard-state'
 
 const linkClassName = classNames(
   popover.items.classNames.navigationLink,
   popover.items.classNames.selectedOption,
-  popover.items.classNames.hoverLink,
-  popover.items.classNames.roundedStartEnd
+  popover.items.classNames.hoverLink
 )
 const buttonClassName = classNames(
   'text-white font-medium bg-indigo-600 hover:bg-indigo-700'
@@ -29,15 +28,15 @@ const buttonClassName = classNames(
 
 export const useClearExpandedSegmentModeOnFilterClear = ({
   expandedSegment,
-  query
+  dashboardState
 }: {
   expandedSegment: SavedSegment | null
-  query: DashboardQuery
+  dashboardState: DashboardState
 }) => {
   const navigate = useAppNavigate()
   useEffect(() => {
     // clear edit mode on clearing all filters or removing last filter
-    if (!!expandedSegment && !query.filters.length) {
+    if (!!expandedSegment && !dashboardState.filters.length) {
       navigate({
         search: (s) => s,
         state: {
@@ -46,19 +45,19 @@ export const useClearExpandedSegmentModeOnFilterClear = ({
         replace: true
       })
     }
-  }, [query.filters, expandedSegment, navigate])
+  }, [dashboardState.filters, expandedSegment, navigate])
 }
 
 export const SegmentMenu = () => {
   const { setModal } = useRoutelessModalsContext()
-  const { expandedSegment } = useQueryContext()
+  const { expandedSegment } = useDashboardStateContext()
 
   if (!expandedSegment) {
     return null
   }
 
   return (
-    <div className="flex shadow">
+    <div className="flex shadow-sm">
       <AppNavigationLink
         className={classNames(
           popover.toggleButton.classNames.rounded,
@@ -87,16 +86,17 @@ export const SegmentMenu = () => {
               )}
             >
               <ChevronDownIcon
+                data-testid="segment-menu"
                 className="w-4 h-4 md:h-5 md:w-5 block"
                 aria-hidden="true"
               />
             </Popover.Button>
             <Transition
+              as="div"
               {...popover.transition.props}
               className={classNames(
-                'mt-2',
                 popover.transition.classNames.fullwidth,
-                'md:w-auto md:left-auto'
+                'mt-2 md:w-auto md:left-auto md:origin-top-right'
               )}
             >
               <Popover.Panel className={popover.panel.classNames.roundedSheet}>

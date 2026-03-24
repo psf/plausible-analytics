@@ -70,6 +70,63 @@ defmodule Plausible.Segments do
     {:ok, Repo.all(query)}
   end
 
+  def search_by_name(%Plausible.Site{} = site, input) do
+    type = :site
+    fields = [:id, :name]
+
+    input_empty? = is_nil(input) or (is_binary(input) and String.trim(input) == "")
+
+    base_query =
+      from(segment in Segment,
+        where: segment.site_id == ^site.id,
+        where: segment.type == ^type,
+        limit: 20
+      )
+
+    query =
+      if input_empty? do
+        from([segment] in base_query,
+          select: ^fields,
+          order_by: [desc: segment.updated_at]
+        )
+      else
+        from([segment] in base_query,
+          select: %{
+            id: segment.id,
+            name: segment.name,
+            match_rank:
+              fragment(
+                "CASE
+                  WHEN lower(?) = lower(?) THEN 0                    -- exact match
+                  WHEN lower(?) LIKE lower(?) || '%' THEN 1          -- starts with
+                  WHEN lower(?) LIKE '% ' || lower(?) || '%' THEN 2  -- after a space
+                  WHEN lower(?) ILIKE ? THEN 3                        -- anywhere
+                END AS match_rank",
+                segment.name,
+                ^input,
+                segment.name,
+                ^input,
+                segment.name,
+                ^input,
+                segment.name,
+                ^"%#{input}%"
+              ),
+            pos:
+              fragment(
+                "position(lower(?) IN lower(?)) AS pos",
+                ^input,
+                segment.name
+              ),
+            len_diff: fragment("abs(length(?) - length(?)) AS len_diff", segment.name, ^input)
+          },
+          where: fragment("? ilike ?", segment.name, ^"%#{input}%"),
+          order_by: fragment("match_rank asc, pos asc, len_diff asc, updated_at desc")
+        )
+      end
+
+    {:ok, Repo.all(query)}
+  end
+
   @spec get_one(pos_integer(), Plausible.Site.t(), atom(), pos_integer() | nil) ::
           {:ok, Segment.t()}
           | error_not_enough_permissions()
@@ -281,6 +338,33 @@ defmodule Plausible.Segments do
     end
   end
 
+  def get_related_shared_links(
+        _site,
+        _site_role,
+        nil
+      ) do
+    {:error, :segment_not_found}
+  end
+
+  def get_related_shared_links(
+        %Plausible.Site{} = site,
+        site_role,
+        segment_id
+      ) do
+    if site_role in roles_with_personal_segments() do
+      {:ok,
+       Repo.all(
+         from(shared_link in Plausible.Site.SharedLink,
+           select: [:name],
+           where: shared_link.segment_id == ^segment_id,
+           where: shared_link.site_id == ^site.id
+         )
+       )}
+    else
+      {:error, :not_enough_permissions}
+    end
+  end
+
   @spec do_get_one(pos_integer(), pos_integer(), pos_integer() | nil) ::
           Segment.t() | nil
   defp do_get_one(user_id, site_id, segment_id)
@@ -368,14 +452,5 @@ defmodule Plausible.Segments do
       end)
 
     "#{field} #{formatted_message}"
-  end
-
-  @spec get_site_segments_usage_query(list(pos_integer())) :: Ecto.Query.t()
-  def get_site_segments_usage_query(site_ids) do
-    from(segment in Segment,
-      as: :segment,
-      where: segment.type == :site,
-      where: segment.site_id in ^site_ids
-    )
   end
 end

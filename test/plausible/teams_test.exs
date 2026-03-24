@@ -1,7 +1,5 @@
 defmodule Plausible.TeamsTest do
   use Plausible.DataCase, async: true
-  use Plausible
-  use Plausible.Teams.Test
 
   alias Plausible.Billing.Subscription
   alias Plausible.Teams
@@ -11,14 +9,14 @@ defmodule Plausible.TeamsTest do
 
   describe "name/1" do
     test "returns default name when there's no team" do
-      assert Teams.name(nil) == "My Personal Sites"
+      assert Teams.name(nil) == "My personal sites"
     end
 
     test "returns default name when team setup is not completed yet" do
       user = new_user(team: [setup_complete: false, name: "Foo"])
       team = team_of(user)
 
-      assert Teams.name(team) == "My Personal Sites"
+      assert Teams.name(team) == "My personal sites"
     end
 
     test "returns team name for a setup team" do
@@ -30,14 +28,14 @@ defmodule Plausible.TeamsTest do
   end
 
   describe "get_or_create/1" do
-    test "creates 'My Personal Sites' if user is a member of no teams" do
+    test "creates 'My personal sites' if user is a member of no teams" do
       today = Date.utc_today()
       user = new_user()
       user_id = user.id
 
       assert {:ok, team} = Teams.get_or_create(user)
 
-      assert team.name == "My Personal Sites"
+      assert team.name == "My personal sites"
       assert Date.compare(team.trial_expiry_date, today) == :gt
 
       assert [
@@ -70,7 +68,7 @@ defmodule Plausible.TeamsTest do
 
       assert team.id == existing_team.id
       assert Date.compare(team.trial_expiry_date, ~D[2020-04-01])
-      assert team.name == "My Personal Sites"
+      assert team.name == "My personal sites"
 
       assert [
                %{user_id: ^user_id, role: :owner, is_autocreated: true}
@@ -98,7 +96,7 @@ defmodule Plausible.TeamsTest do
                |> Enum.sort_by(& &1.id)
     end
 
-    test "creates 'My Personal Sites' if user is a guest on another team" do
+    test "creates 'My personal sites' if user is a guest on another team" do
       user = new_user()
       user_id = user.id
       site = new_site()
@@ -108,7 +106,7 @@ defmodule Plausible.TeamsTest do
       assert {:ok, team} = Teams.get_or_create(user)
 
       assert team.id != existing_team.id
-      assert team.name == "My Personal Sites"
+      assert team.name == "My personal sites"
 
       assert [%{user_id: ^user_id, role: :owner, is_autocreated: true}] =
                team
@@ -116,7 +114,7 @@ defmodule Plausible.TeamsTest do
                |> Map.fetch!(:team_memberships)
     end
 
-    test "creates 'My Personal Sites' if user is a non-owner member on existing teams" do
+    test "creates 'My personal sites' if user is a non-owner member on existing teams" do
       user = new_user()
       user_id = user.id
       site1 = new_site()
@@ -172,6 +170,26 @@ defmodule Plausible.TeamsTest do
     end
   end
 
+  on_ee do
+    describe "get_or_create/1 - SSO user" do
+      setup [:create_user, :create_team, :setup_sso, :provision_sso_user]
+
+      test "does not allow creating personal team to SSO user", %{user: user} do
+        assert {:error, :permission_denied} = Teams.get_or_create(user)
+      end
+    end
+
+    describe "force_create_my_team/1 - SSO user" do
+      setup [:create_user, :create_team, :setup_sso, :provision_sso_user]
+
+      test "crashes when trying to create a team for SSO user", %{user: user} do
+        assert_raise RuntimeError, ~r/SSO user tried to force create a personal team/, fn ->
+          Teams.force_create_my_team(user)
+        end
+      end
+    end
+  end
+
   describe "get_by_owner/1" do
     test "returns error if user does not own any team" do
       user = new_user()
@@ -187,7 +205,7 @@ defmodule Plausible.TeamsTest do
       assert {:error, :no_team} = Teams.get_by_owner(user)
     end
 
-    test "returns existing 'My Personal Sites' if user already owns one" do
+    test "returns existing 'My personal sites' if user already owns one" do
       user = new_user(trial_expiry_date: ~D[2020-04-01])
       user_id = user.id
       existing_team = team_of(user)
@@ -196,7 +214,7 @@ defmodule Plausible.TeamsTest do
 
       assert team.id == existing_team.id
       assert Date.compare(team.trial_expiry_date, ~D[2020-04-01])
-      assert team.name == "My Personal Sites"
+      assert team.name == "My personal sites"
 
       assert [
                %{user_id: ^user_id, role: :owner, is_autocreated: true}
@@ -407,6 +425,62 @@ defmodule Plausible.TeamsTest do
       assert {:error, :active_subscription} = Teams.delete(team)
 
       assert Repo.reload(team)
+    end
+  end
+
+  describe "owned_sites/1" do
+    setup [:create_user, :create_team]
+
+    test "returns sites owned by a team", %{user: user, team: team} do
+      %{id: site_id} = new_site(owner: user)
+      new_site(owner: user, consolidated: true)
+
+      assert [%{id: ^site_id}] = Teams.owned_sites(team)
+    end
+
+    test "limit limits number of sites returned", %{user: user, team: team} do
+      %{id: site_id1} = new_site(owner: user, domain: "b")
+      %{id: site_id2} = new_site(owner: user, domain: "c")
+      %{id: _site_id3} = new_site(owner: user, domain: "d")
+      new_site(owner: user, consolidated: true, domain: "a")
+
+      assert [%{id: ^site_id1}, %{id: ^site_id2}] = Teams.owned_sites(team, 2)
+    end
+
+    test "returns empty list for no team" do
+      assert [] = Teams.owned_sites(nil)
+    end
+  end
+
+  describe "owned_sites_ids/1" do
+    setup [:create_user, :create_team]
+
+    test "returns site IDs owned by a team", %{user: user, team: team} do
+      %{id: site_id2} = new_site(owner: user)
+      %{id: site_id1} = new_site(owner: user)
+      new_site(owner: user, consolidated: true)
+
+      assert [^site_id1, ^site_id2] = Teams.owned_sites_ids(team)
+    end
+
+    test "returns empty list for no team" do
+      assert [] = Teams.owned_sites_ids(nil)
+    end
+  end
+
+  describe "owned_sites_count/1" do
+    setup [:create_user, :create_team]
+
+    test "returns site count owned by a team", %{user: user, team: team} do
+      new_site(owner: user)
+      new_site(owner: user)
+      new_site(owner: user, consolidated: true)
+
+      assert Teams.owned_sites_count(team) == 2
+    end
+
+    test "returns empty list for no team" do
+      assert Teams.owned_sites_count(nil) == 0
     end
   end
 end

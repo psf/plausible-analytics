@@ -1,11 +1,14 @@
 /**
-  These 3 modules are resolved from '../deps' folder, 
-  which does not exist when running the lint command in Github CI 
+  The modules below this comment block are resolved from '../deps' folder,
+  which does not exist when running the lint command in Github CI
 */
+
 /* eslint-disable import/no-unresolved */
 import 'phoenix_html'
 import { Socket } from 'phoenix'
 import { LiveSocket } from 'phoenix_live_view'
+import { Modal, Dropdown } from 'prima'
+import topbar from 'topbar'
 /* eslint-enable import/no-unresolved */
 
 import Alpine from 'alpinejs'
@@ -13,17 +16,12 @@ import Alpine from 'alpinejs'
 let csrfToken = document.querySelector("meta[name='csrf-token']")
 let websocketUrl = document.querySelector("meta[name='websocket-url']")
 if (csrfToken && websocketUrl) {
-  let Hooks = {}
+  let Hooks = { Modal, Dropdown }
   Hooks.Metrics = {
     mounted() {
       this.handleEvent('send-metrics', ({ event_name }) => {
-        const afterMetrics = () => {
-          this.pushEvent('send-metrics-after', { event_name })
-        }
-        setTimeout(afterMetrics, 5000)
-        if (window.trackCustomEvent) {
-          window.trackCustomEvent(event_name, { callback: afterMetrics })
-        }
+        window.plausible(event_name)
+        this.pushEvent('send-metrics-after', { event_name })
       })
     }
   }
@@ -65,6 +63,15 @@ if (csrfToken && websocketUrl) {
       }
     }
   })
+
+  topbar.config({
+    barColors: { 0: '#303f9f' },
+    shadowColor: 'rgba(0, 0, 0, .3)',
+    barThickness: 4
+  })
+  window.addEventListener('phx:page-loading-start', (_info) => topbar.show())
+  window.addEventListener('phx:page-loading-stop', (_info) => topbar.hide())
+  window.addEventListener('scroll-to-top', () => window.scrollTo(0, 0))
 
   liveSocket.connect()
   window.liveSocket = liveSocket

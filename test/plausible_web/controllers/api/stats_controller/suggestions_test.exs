@@ -4,7 +4,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
   describe "GET /api/stats/:domain/suggestions/:filter_name" do
     setup [:create_user, :log_in, :create_site]
 
-    test "returns suggestions for pages without a query", %{conn: conn, site: site} do
+    test "returns suggestions for pages with empty query", %{conn: conn, site: site} do
       populate_stats(site, [
         build(:pageview, timestamp: ~N[2019-01-01 23:00:00], pathname: "/"),
         build(:pageview, timestamp: ~N[2019-01-01 23:00:00], pathname: "/register"),
@@ -12,7 +12,8 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
         build(:pageview, timestamp: ~N[2019-01-01 23:00:01], pathname: "/irrelevant")
       ])
 
-      conn = get(conn, "/api/stats/#{site.domain}/suggestions/page?period=month&date=2019-01-01")
+      conn =
+        get(conn, "/api/stats/#{site.domain}/suggestions/page?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [
                %{"label" => "/", "value" => "/"},
@@ -72,6 +73,53 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       assert json_response(conn, 200) == [%{"label" => "Signup", "value" => "Signup"}]
     end
 
+    @tag :ee_only
+    test "excludes goals with custom props when Props feature is unavailable", %{
+      conn: conn,
+      site: site,
+      user: user
+    } do
+      user
+      |> team_of()
+      |> Plausible.Teams.Team.end_trial()
+      |> Plausible.Repo.update!()
+
+      {:ok, _goal_with_props} =
+        Plausible.Goals.create(site, %{
+          "event_name" => "Purchase",
+          "custom_props" => %{"product" => "Shirt"}
+        })
+
+      {:ok, _goal_without_props} =
+        Plausible.Goals.create(site, %{"event_name" => "Signup"})
+
+      conn = get(conn, "/api/stats/#{site.domain}/suggestions/goal?period=day&q=")
+
+      assert json_response(conn, 200) == [%{"label" => "Signup", "value" => "Signup"}]
+    end
+
+    @tag :ee_only
+    test "includes goals with custom props when Props feature is available", %{
+      conn: conn,
+      site: site
+    } do
+      {:ok, _goal_with_props} =
+        Plausible.Goals.create(site, %{
+          "event_name" => "Purchase",
+          "custom_props" => %{"product" => "Shirt"}
+        })
+
+      {:ok, _goal_without_props} =
+        Plausible.Goals.create(site, %{"event_name" => "Signup"})
+
+      conn = get(conn, "/api/stats/#{site.domain}/suggestions/goal?period=day&q=")
+
+      suggestions = json_response(conn, 200)
+      assert length(suggestions) == 2
+      assert %{"label" => "Purchase", "value" => "Purchase"} in suggestions
+      assert %{"label" => "Signup", "value" => "Signup"} in suggestions
+    end
+
     test "returns suggestions for sources", %{conn: conn, site: site} do
       populate_stats(site, [
         build(:pageview, timestamp: ~N[2019-01-01 23:00:00], referrer_source: "Bing"),
@@ -83,9 +131,10 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/source?period=month&date=2019-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/source?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [
+               %{"label" => "Direct / None", "value" => "Direct / None"},
                %{"label" => "Bing", "value" => "Bing"},
                %{"label" => "10words", "value" => "10words"}
              ]
@@ -102,7 +151,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/channel?period=month&date=2019-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/channel?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [
                %{"label" => "Organic Search", "value" => "Organic Search"},
@@ -180,6 +229,26 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       assert json_response(conn, 200) == []
     end
 
+    test "returns 400 for nil query parameter", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          timestamp: ~N[2019-01-01 23:00:01],
+          pathname: "/",
+          country_code: "US"
+        )
+      ])
+
+      conn =
+        get(
+          conn,
+          "/api/stats/#{site.domain}/suggestions/country?period=month&date=2019-01-01"
+        )
+
+      assert json_response(conn, 400) == %{
+               "error" => "Search parameter 'q' is required"
+             }
+    end
+
     test "returns suggestions for screen sizes", %{conn: conn, site: site} do
       populate_stats(site, [
         build(:pageview,
@@ -190,7 +259,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/screen?period=month&date=2019-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/screen?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [%{"value" => "Desktop", "label" => "Desktop"}]
     end
@@ -205,7 +274,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/browser?period=month&date=2019-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/browser?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [%{"label" => "Chrome", "value" => "Chrome"}]
     end
@@ -224,7 +293,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       conn =
         get(
           conn,
-          "/api/stats/#{site.domain}/suggestions/browser_version?period=month&date=2019-01-01&filters=#{filters}"
+          "/api/stats/#{site.domain}/suggestions/browser_version?period=month&date=2019-01-01&filters=#{filters}&q="
         )
 
       assert json_response(conn, 200) == [%{"value" => "78.0", "label" => "78.0"}]
@@ -235,7 +304,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
         build(:pageview, timestamp: ~N[2019-01-01 00:00:00], operating_system: "Mac")
       ])
 
-      conn = get(conn, "/api/stats/#{site.domain}/suggestions/os?period=month&date=2019-01-01")
+      conn = get(conn, "/api/stats/#{site.domain}/suggestions/os?period=month&date=2019-01-01&q=")
 
       assert json_response(conn, 200) == [%{"value" => "Mac", "label" => "Mac"}]
     end
@@ -254,7 +323,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       conn =
         get(
           conn,
-          "/api/stats/#{site.domain}/suggestions/os_version?period=month&date=2019-01-01&filters=#{filters}"
+          "/api/stats/#{site.domain}/suggestions/os_version?period=month&date=2019-01-01&filters=#{filters}&q="
         )
 
       assert json_response(conn, 200) == [%{"label" => "10.15", "value" => "10.15"}]
@@ -386,7 +455,10 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/referrer?period=month&date=2019-01-01")
+        get(
+          conn,
+          "/api/stats/#{site.domain}/suggestions/referrer?period=month&date=2019-01-01&q="
+        )
 
       assert json_response(conn, 200) == [
                %{"value" => "10words.com/page1", "label" => "10words.com/page1"}
@@ -432,7 +504,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&q=")
 
       assert json_response(conn, 200) == [
                %{"label" => "author", "value" => "author"},
@@ -517,7 +589,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       conn =
         get(
           conn,
-          "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&filters=#{filters}"
+          "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&filters=#{filters}&q="
         )
 
       assert json_response(conn, 200) == [
@@ -551,7 +623,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&q=")
 
       assert json_response(conn, 200) == [
                %{"label" => "author", "value" => "author"}
@@ -582,7 +654,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       ])
 
       conn =
-        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01")
+        get(conn, "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&q=")
 
       suggestions = json_response(conn, 200)
       assert %{"label" => "author", "value" => "author"} in suggestions
@@ -1120,7 +1192,7 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
       key_conn =
         get(
           conn,
-          "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&with_imported=true"
+          "/api/stats/#{site.domain}/suggestions/prop_key?period=day&date=2022-01-01&with_imported=true&q="
         )
 
       assert json_response(key_conn, 200) == [%{"label" => "url", "value" => "url"}]
@@ -1158,10 +1230,18 @@ defmodule PlausibleWeb.Api.StatsController.SuggestionsTest do
             "/api/stats/#{site.domain}/suggestions/source?period=month&date=2019-01-01&q=#{unquote(q)}&with_imported=true"
           )
 
-        assert json_response(conn, 200) == [
-                 %{"value" => "Google", "label" => "Google"},
-                 %{"value" => "Bing", "label" => "Bing"}
-               ]
+        if unquote(label) == "with filter" do
+          assert json_response(conn, 200) == [
+                   %{"value" => "Google", "label" => "Google"},
+                   %{"value" => "Bing", "label" => "Bing"}
+                 ]
+        else
+          assert json_response(conn, 200) == [
+                   %{"value" => "Direct / None", "label" => "Direct / None"},
+                   %{"value" => "Google", "label" => "Google"},
+                   %{"value" => "Bing", "label" => "Bing"}
+                 ]
+        end
       end
 
       test "merges channel suggestions from native and imported data #{label}", %{

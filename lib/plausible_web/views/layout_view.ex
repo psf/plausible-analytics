@@ -4,6 +4,7 @@ defmodule PlausibleWeb.LayoutView do
 
   alias Plausible.Teams
   alias PlausibleWeb.Components.Billing.Notice
+  alias PlausibleWeb.Components.Layout
 
   def plausible_url do
     PlausibleWeb.Endpoint.url()
@@ -51,69 +52,67 @@ defmodule PlausibleWeb.LayoutView do
   end
 
   def site_settings_sidebar(conn) do
+    regular_site? = Plausible.Sites.regular?(conn.assigns.site)
+
     [
       %{key: "General", value: "general", icon: :rocket_launch},
-      %{key: "People", value: "people", icon: :users},
-      %{key: "Visibility", value: "visibility", icon: :eye},
+      if regular_site? do
+        %{key: "People", value: "people", icon: :users}
+      end,
+      if regular_site? do
+        %{key: "Visibility", value: "visibility", icon: :eye}
+      end,
       %{key: "Goals", value: "goals", icon: :check_circle},
       on_ee do
-        %{key: "Funnels", value: "funnels", icon: :funnel}
+        if regular_site? do
+          %{key: "Funnels", value: "funnels", icon: :funnel}
+        end
       end,
-      %{key: "Custom Properties", value: "properties", icon: :document_text},
-      %{key: "Integrations", value: "integrations", icon: :arrow_path_rounded_square},
-      %{key: "Imports & Exports", value: "imports-exports", icon: :arrows_up_down},
-      %{
-        key: "Shields",
-        icon: :shield_exclamation,
-        value: [
-          %{key: "IP Addresses", value: "shields/ip_addresses"},
-          %{key: "Countries", value: "shields/countries"},
-          %{key: "Pages", value: "shields/pages"},
-          %{key: "Hostnames", value: "shields/hostnames"}
-        ]
-      },
-      %{key: "Email Reports", value: "email-reports", icon: :envelope},
-      if conn.assigns[:site_role] in [:owner, :admin] do
-        %{key: "Danger Zone", value: "danger-zone", icon: :exclamation_triangle}
+      %{key: "Custom properties", value: "properties", icon: :tag},
+      if regular_site? do
+        %{key: "Integrations", value: "integrations", icon: :puzzle_piece}
+      end,
+      if regular_site? do
+        %{key: "Imports & exports", value: "imports-exports", icon: :arrow_down_tray}
+      end,
+      if regular_site? do
+        %{
+          key: "Shields",
+          icon: :shield_exclamation,
+          value: [
+            %{key: "IP addresses", value: "shields/ip_addresses"},
+            %{key: "Countries", value: "shields/countries"},
+            %{key: "Pages", value: "shields/pages"},
+            %{key: "Hostnames", value: "shields/hostnames"}
+          ]
+        }
+      end,
+      %{key: "Email reports", value: "email-reports", icon: :envelope},
+      if regular_site? and conn.assigns[:site_role] in [:owner, :admin] do
+        %{key: "Danger zone", value: "danger-zone", icon: :exclamation_triangle}
       end
     ]
     |> Enum.reject(&is_nil/1)
   end
 
-  def flat_site_settings_options(conn) do
-    conn
-    |> site_settings_sidebar()
-    |> Enum.map(fn
-      %{value: value, key: key} when is_binary(value) ->
-        {key, value}
-
-      %{value: submenu_items, key: parent_key} when is_list(submenu_items) ->
-        Enum.map(submenu_items, fn submenu_item ->
-          {"#{parent_key}: #{submenu_item.key}", submenu_item.value}
-        end)
-    end)
-    |> List.flatten()
-  end
-
-  def account_settings_sidebar(conn) do
-    current_team = conn.assigns[:current_team]
-    current_team_role = conn.assigns[:current_team_role]
+  def account_settings_sidebar(assigns) do
+    current_team = assigns.current_team
+    current_team_role = assigns.current_team_role
 
     options = %{
-      "Account Settings" =>
+      "Account" =>
         [
           %{key: "Preferences", value: "preferences", icon: :cog_6_tooth},
           %{key: "Security", value: "security", icon: :lock_closed},
-          if(not Teams.setup?(current_team),
-            do: %{key: "Subscription", value: "billing/subscription", icon: :circle_stack}
+          if(ee?() and not Teams.setup?(current_team),
+            do: %{key: "Subscription", value: "billing/subscription", icon: :subscription}
           ),
           if(not Teams.setup?(current_team),
-            do: %{key: "Invoices", value: "billing/invoices", icon: :banknotes}
+            do: %{key: "API keys", value: "api-keys", icon: :api_keys}
           ),
-          if(not Teams.setup?(current_team),
-            do: %{key: "API Keys", value: "api-keys", icon: :key}
-          ),
-          %{key: "Danger Zone", value: "danger-zone", icon: :exclamation_triangle}
+          if(Plausible.Users.type(assigns.current_user) == :standard,
+            do: %{key: "Danger zone", value: "danger-zone", icon: :exclamation_triangle}
+          )
         ]
         |> Enum.reject(&is_nil/1)
     }
@@ -121,16 +120,37 @@ defmodule PlausibleWeb.LayoutView do
     if Teams.setup?(current_team) do
       Map.put(
         options,
-        "Team Settings",
+        "Team",
         [
           %{key: "General", value: "team/general", icon: :adjustments_horizontal},
-          %{key: "Subscription", value: "billing/subscription", icon: :circle_stack},
-          if(current_team_role in [:owner, :admin, :billing],
-            do: %{key: "Invoices", value: "billing/invoices", icon: :banknotes}
+          if(ee?() and current_team_role in [:owner, :billing],
+            do: %{key: "Subscription", value: "billing/subscription", icon: :subscription}
           ),
-          %{key: "API Keys", value: "api-keys", icon: :key},
+          if(current_team_role in [:owner, :billing, :admin, :editor],
+            do: %{key: "API keys", value: "api-keys", icon: :api_keys}
+          ),
+          if(
+            ee?() and current_team_role == :owner and
+              Plausible.Billing.Feature.SSO.check_availability(current_team) == :ok,
+            do: %{
+              key: "Single Sign-On",
+              icon: :cloud,
+              value: [
+                %{key: "Configuration", value: "sso/general"},
+                %{key: "Sessions", value: "sso/sessions"}
+              ]
+            }
+          ),
+          if(
+            ee?() and Plausible.Billing.Feature.SSO.check_availability(current_team) != :ok,
+            do: %{
+              key: "Single Sign-On",
+              value: "sso/info",
+              icon: :cloud
+            }
+          ),
           if(current_team_role == :owner,
-            do: %{key: "Danger Zone", value: "team/delete", icon: :exclamation_triangle}
+            do: %{key: "Danger zone", value: "team/delete", icon: :exclamation_triangle}
           )
         ]
         |> Enum.reject(&is_nil/1)
@@ -219,16 +239,6 @@ defmodule PlausibleWeb.LayoutView do
     end
   end
 
-  def grace_period_end(%{grace_period: %{end_date: %Date{} = date}}) do
-    case Date.diff(date, Date.utc_today()) do
-      0 -> "today"
-      1 -> "tomorrow"
-      n -> "within #{n} days"
-    end
-  end
-
-  def grace_period_end(_user), do: "in the following days"
-
   @doc "http://blog.plataformatec.com.br/2018/05/nested-layouts-with-phoenix/"
   def render_layout(layout, assigns, do: content) do
     render(layout, Map.put(assigns, :inner_layout, content))
@@ -236,6 +246,10 @@ defmodule PlausibleWeb.LayoutView do
 
   def is_current_tab(_, nil) do
     false
+  end
+
+  def is_current_tab(path, tab) when is_binary(path) do
+    String.ends_with?(path, tab)
   end
 
   def is_current_tab(conn, tab) do
