@@ -1,15 +1,3 @@
-defimpl Bamboo.Formatter, for: Plausible.Auth.User do
-  def format_email_address(user, _opts) do
-    {user.name, user.email}
-  end
-end
-
-defimpl FunWithFlags.Actor, for: Plausible.Auth.User do
-  def id(%{id: id}) do
-    "user:#{id}"
-  end
-end
-
 defmodule Plausible.Auth.User do
   use Plausible
   use Ecto.Schema
@@ -18,6 +6,21 @@ defmodule Plausible.Auth.User do
   @type t() :: %__MODULE__{}
 
   @required [:email, :name, :password]
+
+  on_ee do
+    @derive {Plausible.Audit.Encoder,
+             only: [
+               :id,
+               :email,
+               :name,
+               :email_verified,
+               :previous_email,
+               :totp_enabled,
+               :last_team_identifier,
+               :sso_integration,
+               :sso_domain
+             ]}
+  end
 
   schema "users" do
     field :email, :string
@@ -39,6 +42,19 @@ defmodule Plausible.Auth.User do
     field :totp_secret, Plausible.Auth.TOTP.EncryptedBinary
     field :totp_token, :string
     field :totp_last_used_at, :naive_datetime
+
+    # for context perseverance across sessions
+    field :last_team_identifier, Ecto.UUID
+
+    on_ee do
+      # Fields for SSO
+      field :type, Ecto.Enum, values: [:standard, :sso]
+      field :sso_identity_id, :string
+      field :last_sso_login, :naive_datetime
+
+      belongs_to :sso_integration, Plausible.Auth.SSO.Integration, on_replace: :nilify
+      belongs_to :sso_domain, Plausible.Auth.SSO.Domain, on_replace: :nilify
+    end
 
     has_many :sessions, Plausible.Auth.UserSession
     has_many :team_memberships, Plausible.Teams.Membership
@@ -187,6 +203,10 @@ defmodule Plausible.Auth.User do
     Path.join(PlausibleWeb.Endpoint.url(), ["avatar/", hash])
   end
 
+  def profile_img_url(email) when is_binary(email) do
+    profile_img_url(%__MODULE__{email: email})
+  end
+
   defp validate_email_changed(changeset) do
     if !get_change(changeset, :email) && !changeset.errors[:email] do
       add_error(changeset, :email, "can't be the same", validation: :different_email)
@@ -250,5 +270,17 @@ defmodule Plausible.Auth.User do
       must_verify? = Keyword.fetch!(selfhosted_config, :enable_email_verification)
       change(user, email_verified: not must_verify?)
     end
+  end
+end
+
+defimpl Bamboo.Formatter, for: Plausible.Auth.User do
+  def format_email_address(user, _opts) do
+    {user.name, user.email}
+  end
+end
+
+defimpl FunWithFlags.Actor, for: Plausible.Auth.User do
+  def id(%{id: id}) do
+    "user:#{id}"
   end
 end

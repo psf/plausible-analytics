@@ -42,11 +42,11 @@ defmodule PlausibleWeb.Live.TeamManagement do
     <.flash_messages flash={@flash} />
 
     <PlausibleWeb.Components.Billing.Notice.limit_exceeded
-      :if={at_limit?(@layout, @team_members_limit)}
-      current_role={@current_team_role}
+      :if={@team_members_limit != 0 and at_limit?(@layout, @team_members_limit)}
+      current_user={@current_user}
       current_team={@current_team}
       limit={@team_members_limit}
-      resource="team members"
+      resource="members"
       class="mb-4"
     />
     <div>
@@ -65,7 +65,7 @@ defmodule PlausibleWeb.Live.TeamManagement do
           </div>
 
           <.dropdown id="input-role-picker">
-            <:button class="role border rounded border-indigo-700 bg-transparent text-gray-800 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 focus-visible:outline-gray-100 whitespace-nowrap truncate inline-flex items-center gap-x-2 font-medium rounded-md px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:bg-gray-400 dark:disabled:text-white dark:disabled:text-gray-400 dark:disabled:bg-gray-700">
+            <:button class="role inline-flex items-center gap-x-2 font-medium rounded-md px-3 py-2 text-sm border border-gray-300 dark:border-gray-750 rounded-md text-gray-800 dark:text-gray-100 dark:bg-gray-750 dark:hover:bg-gray-700 focus-visible:outline-gray-100 whitespace-nowrap truncate shadow-xs hover:shadow-sm transition-all duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:bg-gray-400 dark:disabled:text-white dark:disabled:text-gray-400 dark:disabled:bg-gray-700">
               {@input_role |> Atom.to_string() |> String.capitalize()}
               <Heroicons.chevron_down mini class="size-4 mt-0.5" />
             </:button>
@@ -132,11 +132,11 @@ defmodule PlausibleWeb.Live.TeamManagement do
       </div>
 
       <div :if={Layout.has_guests?(@layout)} class="flex items-center mt-4 mb-4" id="guests-hr">
-        <hr class="flex-grow border-t border-gray-200 dark:border-gray-600" />
+        <hr class="grow border-t border-gray-200 dark:border-gray-700" />
         <span class="mx-4 text-gray-500 text-sm">
           Guests
         </span>
-        <hr class="flex-grow border-t border-gray-200 dark:border-gray-600" />
+        <hr class="grow border-t border-gray-200 dark:border-gray-700" />
       </div>
 
       <div :if={Layout.has_guests?(@layout)} id="guest-list">
@@ -148,6 +148,7 @@ defmodule PlausibleWeb.Live.TeamManagement do
           label={entry_label(entry, @current_user)}
           my_role={@my_role}
           remove_disabled={not Layout.removable?(@layout, email)}
+          disabled={@my_role not in [:owner, :admin]}
         />
       </div>
 
@@ -314,6 +315,13 @@ defmodule PlausibleWeb.Live.TeamManagement do
           "The team has to have at least one owner"
         )
 
+      {{:error, :disabled_2fa}, _} ->
+        socket
+        |> put_live_flash(
+          :error,
+          "User must have 2FA enabled to become an owner"
+        )
+
       {{:error, {:over_limit, limit}}, _} ->
         socket
         |> put_live_flash(
@@ -324,10 +332,15 @@ defmodule PlausibleWeb.Live.TeamManagement do
   end
 
   defp entry_label(%Layout.Entry{role: :guest, type: :membership}, _), do: nil
-  defp entry_label(%Layout.Entry{type: :invitation_pending}, _), do: "Invitation Pending"
-  defp entry_label(%Layout.Entry{type: :invitation_sent}, _), do: "Invitation Sent"
+  defp entry_label(%Layout.Entry{type: :invitation_pending}, _), do: "Invitation pending"
+  defp entry_label(%Layout.Entry{type: :invitation_sent}, _), do: "Invitation sent"
+
+  defp entry_label(%Layout.Entry{meta: %{user: %{id: id, type: :sso}}}, %{id: id}),
+    do: "You (SSO)"
+
   defp entry_label(%Layout.Entry{meta: %{user: %{id: id}}}, %{id: id}), do: "You"
-  defp entry_label(_, _), do: "Team Member"
+  defp entry_label(%Layout.Entry{meta: %{user: %{type: :sso}}}, _), do: "SSO"
+  defp entry_label(_, _), do: nil
 
   def at_limit?(layout, limit) do
     not Plausible.Billing.Quota.below_limit?(

@@ -12,13 +12,43 @@ defmodule PlausibleWeb.Router do
     plug PlausibleWeb.Plugs.NoRobots
     on_ee(do: nil, else: plug(PlausibleWeb.FirstLaunchPlug, redirect_to: "/register"))
     plug PlausibleWeb.AuthPlug
+    on_ee(do: plug(Plausible.Plugs.HandleExpiredSession))
+    on_ee(do: plug(Plausible.Plugs.SSOTeamAccess))
     plug PlausibleWeb.Plugs.UserSessionTouch
+    plug :put_root_layout, html: {PlausibleWeb.LayoutView, :app}
+  end
+
+  on_ee do
+    pipeline :browser_sso_notice do
+      plug :accepts, ["html"]
+      plug :fetch_session
+      plug :fetch_live_flash
+      plug :put_secure_browser_headers
+      plug PlausibleWeb.Plugs.NoRobots
+      on_ee(do: nil, else: plug(PlausibleWeb.FirstLaunchPlug, redirect_to: "/register"))
+      plug PlausibleWeb.AuthPlug
+      on_ee(do: plug(Plausible.Plugs.HandleExpiredSession))
+      plug PlausibleWeb.Plugs.UserSessionTouch
+      plug :put_root_layout, html: {PlausibleWeb.LayoutView, :app}
+    end
   end
 
   pipeline :shared_link do
     plug :accepts, ["html"]
-    plug :put_secure_browser_headers
+    plug PlausibleWeb.Plugs.SecureEmbedHeaders
     plug PlausibleWeb.Plugs.NoRobots
+    plug :put_root_layout, html: {PlausibleWeb.LayoutView, :app}
+  end
+
+  on_ee do
+    pipeline :helpscout do
+      plug :accepts, ["html"]
+      plug :fetch_session
+      plug PlausibleWeb.Plugs.SecureEmbedHeaders
+      plug PlausibleWeb.Plugs.NoRobots
+      plug PlausibleWeb.AuthPlug
+      plug :put_root_layout, html: {PlausibleWeb.LayoutView, :app}
+    end
   end
 
   pipeline :csrf do
@@ -74,8 +104,9 @@ defmodule PlausibleWeb.Router do
     end
   end
 
-  if Mix.env() in [:dev, :ce_dev] do
+  if Mix.env() in [:dev, :ce_dev, :e2e_test] do
     forward "/sent-emails", Bamboo.SentEmailViewerPlug
+    forward "/sent-emails-api", Bamboo.SentEmailApiPlug
   end
 
   scope "/" do
@@ -88,23 +119,14 @@ defmodule PlausibleWeb.Router do
   end
 
   on_ee do
-    use Kaffy.Routes,
-      scope: "/crm",
-      pipe_through: [
-        PlausibleWeb.Plugs.NoRobots,
-        PlausibleWeb.AuthPlug,
-        PlausibleWeb.SuperAdminOnlyPlug
-      ]
-  end
+    scope alias: PlausibleWeb.Live,
+          assigns: %{connect_live_socket: true, skip_plausible_tracking: true} do
+      pipe_through [:browser, :csrf, :app_layout, :flags]
 
-  on_ee do
-    scope "/crm", PlausibleWeb do
-      pipe_through :flags
-      get "/teams/team/:team_id/usage", AdminController, :usage
-      get "/auth/user/:user_id/info", AdminController, :user_info
-      get "/billing/team/:team_id/current_plan", AdminController, :current_plan
-      get "/billing/search/team-by-id/:team_id", AdminController, :team_by_id
-      post "/billing/search/team", AdminController, :team_search
+      live "/cs", CustomerSupport, :index, as: :customer_support
+      live "/cs/teams/team/:id", CustomerSupport.Team, :show, as: :customer_support_team
+      live "/cs/users/user/:id", CustomerSupport.User, :show, as: :customer_support_user
+      live "/cs/sites/site/:id", CustomerSupport.Site, :show, as: :customer_support_site
     end
   end
 
@@ -115,8 +137,24 @@ defmodule PlausibleWeb.Router do
     end
   end
 
+  on_ee do
+    if Mix.env() in [:dev, :test, :e2e_test] do
+      scope "/dev", PlausibleWeb do
+        pipe_through :browser
+
+        get "/billing/create-subscription-form/:plan_id", DevSubscriptionController, :create_form
+        get "/billing/update-subscription-form", DevSubscriptionController, :update_form
+        get "/billing/cancel-subscription-form", DevSubscriptionController, :cancel_form
+
+        post "/billing/create-subscription/:plan_id", DevSubscriptionController, :create
+        post "/billing/update-subscription", DevSubscriptionController, :update
+        post "/billing/cancel-subscription", DevSubscriptionController, :cancel
+      end
+    end
+  end
+
   # Routes for plug integration testing
-  if Mix.env() in [:test, :ce_test] do
+  if Mix.env() in [:test, :ce_test, :e2e_test] do
     scope "/plug-tests", PlausibleWeb do
       scope [] do
         pipe_through :browser
@@ -132,6 +170,56 @@ defmodule PlausibleWeb.Router do
         get("/api-basic", TestController, :api_basic)
         get("/:domain/api-with-domain", TestController, :api_basic)
       end
+    end
+  end
+
+  # Routes for E2E testing
+  on_ee do
+    if Mix.env() == :e2e_test do
+      scope "/e2e-tests", PlausibleWeb do
+        pipe_through :api
+
+        post "/stats", E2EController, :populate_stats
+        post "/funnel", E2EController, :create_funnel
+      end
+    end
+  end
+
+  # SSO routes
+  on_ee do
+    pipeline :sso_saml do
+      plug :accepts, ["html"]
+
+      plug PlausibleWeb.Plugs.SecureSSO
+
+      plug PlausibleWeb.Plugs.NoRobots
+
+      plug :fetch_session
+      plug :fetch_live_flash
+    end
+
+    pipeline :sso_saml_auth do
+      plug :protect_from_forgery, with: :clear_session
+    end
+
+    scope "/sso", PlausibleWeb do
+      pipe_through [:browser, :csrf]
+
+      get "/login", SSOController, :login_form
+      post "/login", SSOController, :login
+    end
+
+    scope "/sso/saml", PlausibleWeb do
+      pipe_through [:sso_saml]
+
+      scope [] do
+        pipe_through :sso_saml_auth
+
+        get "/signin/:integration_id", SSOController, :saml_signin
+      end
+
+      post "/consume/:integration_id", SSOController, :saml_consume
+      post "/csp-report", SSOController, :csp_report
     end
   end
 
@@ -179,6 +267,9 @@ defmodule PlausibleWeb.Router do
 
       put("/custom_props", CustomProps, :enable)
       delete("/custom_props", CustomProps, :disable)
+
+      get("/tracker_script_configuration", TrackerScriptConfiguration, :get)
+      put("/tracker_script_configuration", TrackerScriptConfiguration, :update)
     end
   end
 
@@ -190,41 +281,46 @@ defmodule PlausibleWeb.Router do
         get "/:domain/funnels/:id", StatsController, :funnel
       end
 
-      get "/:domain/current-visitors", StatsController, :current_visitors
-      get "/:domain/main-graph", StatsController, :main_graph
-      get "/:domain/top-stats", StatsController, :top_stats
-      get "/:domain/sources", StatsController, :sources
-      get "/:domain/channels", StatsController, :channels
-      get "/:domain/utm_mediums", StatsController, :utm_mediums
-      get "/:domain/utm_sources", StatsController, :utm_sources
-      get "/:domain/utm_campaigns", StatsController, :utm_campaigns
-      get "/:domain/utm_contents", StatsController, :utm_contents
-      get "/:domain/utm_terms", StatsController, :utm_terms
-      get "/:domain/referrers/:referrer", StatsController, :referrer_drilldown
-      get "/:domain/pages", StatsController, :pages
-      get "/:domain/entry-pages", StatsController, :entry_pages
-      get "/:domain/exit-pages", StatsController, :exit_pages
-      get "/:domain/countries", StatsController, :countries
-      get "/:domain/regions", StatsController, :regions
-      get "/:domain/cities", StatsController, :cities
-      get "/:domain/browsers", StatsController, :browsers
-      get "/:domain/browser-versions", StatsController, :browser_versions
-      get "/:domain/operating-systems", StatsController, :operating_systems
-      get "/:domain/operating-system-versions", StatsController, :operating_system_versions
-      get "/:domain/screen-sizes", StatsController, :screen_sizes
-      get "/:domain/conversions", StatsController, :conversions
-      get "/:domain/custom-prop-values/:prop_key", StatsController, :custom_prop_values
-      get "/:domain/suggestions/:filter_name", StatsController, :filter_suggestions
+      scope private: %{allow_consolidated_views: true} do
+        post "/:domain/query", StatsController, :query
+        get "/:domain/current-visitors", StatsController, :current_visitors
+        get "/:domain/main-graph", StatsController, :main_graph
+        get "/:domain/top-stats", StatsController, :top_stats
+        get "/:domain/sources", StatsController, :sources
+        get "/:domain/channels", StatsController, :channels
+        get "/:domain/utm_mediums", StatsController, :utm_mediums
+        get "/:domain/utm_sources", StatsController, :utm_sources
+        get "/:domain/utm_campaigns", StatsController, :utm_campaigns
+        get "/:domain/utm_contents", StatsController, :utm_contents
+        get "/:domain/utm_terms", StatsController, :utm_terms
+        get "/:domain/referrers/:referrer", StatsController, :referrer_drilldown
+        get "/:domain/pages", StatsController, :pages
+        get "/:domain/entry-pages", StatsController, :entry_pages
+        get "/:domain/exit-pages", StatsController, :exit_pages
+        get "/:domain/countries", StatsController, :countries
+        get "/:domain/regions", StatsController, :regions
+        get "/:domain/cities", StatsController, :cities
+        get "/:domain/browsers", StatsController, :browsers
+        get "/:domain/browser-versions", StatsController, :browser_versions
+        get "/:domain/operating-systems", StatsController, :operating_systems
+        get "/:domain/operating-system-versions", StatsController, :operating_system_versions
+        get "/:domain/screen-sizes", StatsController, :screen_sizes
+        get "/:domain/conversions", StatsController, :conversions
+        get "/:domain/custom-prop-values/:prop_key", StatsController, :custom_prop_values
+        get "/:domain/suggestions/:filter_name", StatsController, :filter_suggestions
 
-      get "/:domain/suggestions/custom-prop-values/:prop_key",
-          StatsController,
-          :custom_prop_value_filter_suggestions
+        get "/:domain/suggestions/custom-prop-values/:prop_key",
+            StatsController,
+            :custom_prop_value_filter_suggestions
+      end
     end
 
-    scope "/:domain/segments", PlausibleWeb.Api.Internal do
+    scope "/:domain/segments", PlausibleWeb.Api.Internal,
+      private: %{allow_consolidated_views: true} do
       post "/", SegmentsController, :create
       patch "/:segment_id", SegmentsController, :update
       delete "/:segment_id", SegmentsController, :delete
+      get "/:segment_id/shared-links", SegmentsController, :get_related_shared_links
     end
   end
 
@@ -239,22 +335,22 @@ defmodule PlausibleWeb.Router do
   end
 
   scope "/api/v2", PlausibleWeb.Api,
-    assigns: %{api_scope: "stats:read:*", api_context: :site, schema_type: :public} do
+    private: %{
+      allow_consolidated_views: true
+    },
+    assigns: %{
+      api_scope: "stats:read:*",
+      api_context: :site
+    } do
     pipe_through [:public_api, PlausibleWeb.Plugs.AuthorizePublicAPI]
 
     post "/query", ExternalQueryApiController, :query
-
-    if Mix.env() in [:test, :ce_test] do
-      scope assigns: %{schema_type: :internal} do
-        post "/query-internal-test", ExternalQueryApiController, :query
-      end
-    end
   end
 
   scope "/api/docs", PlausibleWeb.Api do
     get "/query/schema.json", ExternalQueryApiController, :schema
 
-    scope assigns: %{schema_type: :public} do
+    scope [] do
       pipe_through :docs_stats_api
 
       post "/query", ExternalQueryApiController, :query
@@ -273,6 +369,7 @@ defmodule PlausibleWeb.Router do
 
         scope assigns: %{api_context: :site} do
           get "/goals", ExternalSitesController, :goals_index
+          get "/custom-props", ExternalSitesController, :custom_props_index
           get "/guests", ExternalSitesController, :guests_index
           get "/:site_id", ExternalSitesController, :get_site
         end
@@ -288,6 +385,10 @@ defmodule PlausibleWeb.Router do
 
           put "/goals", ExternalSitesController, :find_or_create_goal
           delete "/goals/:goal_id", ExternalSitesController, :delete_goal
+
+          put "/custom-props", ExternalSitesController, :add_custom_prop
+          # Property name can contain forward slashes, hence we match on wildcard here
+          delete "/custom-props/*property", ExternalSitesController, :delete_custom_prop
 
           put "/guests", ExternalSitesController, :find_or_create_guest
           delete "/guests/:email", ExternalSitesController, :delete_guest
@@ -356,6 +457,7 @@ defmodule PlausibleWeb.Router do
     post "/login", AuthController, :login
     get "/password/request-reset", AuthController, :password_reset_request_form
     post "/password/request-reset", AuthController, :password_reset_request
+    get "/2fa/setup/force-initiate", AuthController, :force_initiate_2fa_setup
     post "/2fa/setup/initiate", AuthController, :initiate_2fa_setup
     get "/2fa/setup/verify", AuthController, :verify_2fa_setup_form
     post "/2fa/setup/verify", AuthController, :verify_2fa_setup
@@ -374,12 +476,17 @@ defmodule PlausibleWeb.Router do
   scope "/", PlausibleWeb do
     pipe_through [:shared_link]
 
-    get "/share/:domain", StatsController, :shared_link
+    get "/share/:domain/*path", StatsController, :shared_link
     post "/share/:slug/authenticate", StatsController, :authenticate_shared_link
   end
 
   scope "/settings", PlausibleWeb do
-    pipe_through [:browser, :csrf, PlausibleWeb.RequireAccountPlug]
+    pipe_through [
+      :browser,
+      :csrf,
+      PlausibleWeb.RequireAccountPlug,
+      PlausibleWeb.Plugs.CurrentPath
+    ]
 
     get "/", SettingsController, :index
     get "/preferences", SettingsController, :preferences
@@ -394,8 +501,13 @@ defmodule PlausibleWeb.Router do
     post "/security/email", SettingsController, :update_email
     post "/security/password", SettingsController, :update_password
 
-    get "/billing/subscription", SettingsController, :subscription
-    get "/billing/invoices", SettingsController, :invoices
+    live_session :settings, on_mount: PlausibleWeb.Live.SettingsContext do
+      scope alias: Live, assigns: %{connect_live_socket: true} do
+        live "/billing/subscription", SubscriptionSettings, :subscription, as: :settings
+      end
+    end
+
+    get "/billing/invoices", SettingsController, :redirect_invoices
     get "/api-keys", SettingsController, :api_keys
 
     get "/api-keys/new", SettingsController, :new_api_key
@@ -406,6 +518,17 @@ defmodule PlausibleWeb.Router do
 
     get "/team/general", SettingsController, :team_general
     post "/team/general/name", SettingsController, :update_team_name
+    post "/team/leave", SettingsController, :leave_team
+    post "/team/force_2fa/enable", SettingsController, :enable_team_force_2fa
+    post "/team/force_2fa/disable", SettingsController, :disable_team_force_2fa
+
+    on_ee do
+      get "/sso/info", SSOController, :cta
+      get "/sso/general", SSOController, :sso_settings
+      get "/sso/sessions", SSOController, :team_sessions
+      delete "/sso/sessions/:session_id", SSOController, :delete_session
+    end
+
     post "/team/invitations/:invitation_id/accept", InvitationController, :accept_invitation
     post "/team/invitations/:invitation_id/reject", InvitationController, :reject_invitation
     delete "/team/invitations/:invitation_id", InvitationController, :remove_team_invitation
@@ -413,21 +536,36 @@ defmodule PlausibleWeb.Router do
     delete "/team/delete", SettingsController, :delete_team
   end
 
-  scope "/", PlausibleWeb do
-    pipe_through [:browser, :csrf]
+  on_ee do
+    scope "/", PlausibleWeb do
+      pipe_through [:browser_sso_notice, :csrf]
 
-    get "/logout", AuthController, :logout
-    delete "/me", AuthController, :delete_me
+      get "/sso/notice", SSOController, :provision_notice
+      get "/sso/issue", SSOController, :provision_issue
+      get "/logout", AuthController, :logout
+      get "/team/select", AuthController, :select_team
+    end
 
-    get "/team/select", AuthController, :select_team
+    scope "/", PlausibleWeb do
+      pipe_through [:helpscout, :csrf]
 
-    get "/auth/google/callback", AuthController, :google_auth_callback
-
-    on_ee do
       get "/helpscout/callback", HelpScoutController, :callback
       get "/helpscout/show", HelpScoutController, :show
       get "/helpscout/search", HelpScoutController, :search
     end
+  end
+
+  scope "/", PlausibleWeb do
+    pipe_through [:browser, :csrf]
+
+    on_ce do
+      get "/logout", AuthController, :logout
+      get "/team/select", AuthController, :select_team
+    end
+
+    delete "/me", AuthController, :delete_me
+
+    get "/auth/google/callback", AuthController, :google_auth_callback
 
     get "/", PageController, :index
 
@@ -447,54 +585,8 @@ defmodule PlausibleWeb.Router do
 
     get "/sites/new", SiteController, :new
     post "/sites", SiteController, :create_site
-    get "/sites/:domain/change-domain", SiteController, :change_domain
-    put "/sites/:domain/change-domain", SiteController, :change_domain_submit
     post "/sites/:domain/make-public", SiteController, :make_public
     post "/sites/:domain/make-private", SiteController, :make_private
-    post "/sites/:domain/weekly-report/enable", SiteController, :enable_weekly_report
-    post "/sites/:domain/weekly-report/disable", SiteController, :disable_weekly_report
-    post "/sites/:domain/weekly-report/recipients", SiteController, :add_weekly_report_recipient
-
-    delete "/sites/:domain/weekly-report/recipients/:recipient",
-           SiteController,
-           :remove_weekly_report_recipient
-
-    post "/sites/:domain/monthly-report/enable", SiteController, :enable_monthly_report
-    post "/sites/:domain/monthly-report/disable", SiteController, :disable_monthly_report
-
-    post "/sites/:domain/monthly-report/recipients",
-         SiteController,
-         :add_monthly_report_recipient
-
-    delete "/sites/:domain/monthly-report/recipients/:recipient",
-           SiteController,
-           :remove_monthly_report_recipient
-
-    post "/sites/:domain/traffic-change-notification/:type/enable",
-         SiteController,
-         :enable_traffic_change_notification
-
-    post "/sites/:domain/traffic-change-notification/:type/disable",
-         SiteController,
-         :disable_traffic_change_notification
-
-    put "/sites/:domain/traffic-change-notification/:type",
-        SiteController,
-        :update_traffic_change_notification
-
-    post "/sites/:domain/traffic-change-notification/:type/recipients",
-         SiteController,
-         :add_traffic_change_notification_recipient
-
-    delete "/sites/:domain/traffic-change-notification/:type/recipients/:recipient",
-           SiteController,
-           :remove_traffic_change_notification_recipient
-
-    get "/sites/:domain/shared-links/new", SiteController, :new_shared_link
-    post "/sites/:domain/shared-links", SiteController, :create_shared_link
-    get "/sites/:domain/shared-links/:slug/edit", SiteController, :edit_shared_link
-    put "/sites/:domain/shared-links/:slug", SiteController, :update_shared_link
-    delete "/sites/:domain/shared-links/:slug", SiteController, :delete_shared_link
 
     get "/sites/:domain/memberships/invite", Site.MembershipController, :invite_member_form
     post "/sites/:domain/memberships/invite", Site.MembershipController, :invite_member
@@ -517,9 +609,6 @@ defmodule PlausibleWeb.Router do
 
     delete "/sites/:domain/memberships/u/:id", Site.MembershipController, :remove_member_by_user
 
-    get "/sites/:domain/weekly-report/unsubscribe", UnsubscribeController, :weekly_report
-    get "/sites/:domain/monthly-report/unsubscribe", UnsubscribeController, :monthly_report
-
     scope alias: Live, assigns: %{connect_live_socket: true} do
       pipe_through [:app_layout, PlausibleWeb.RequireAccountPlug]
 
@@ -532,32 +621,32 @@ defmodule PlausibleWeb.Router do
       scope assigns: %{
               dogfood_page_path: "/:website/verification"
             } do
-        live "/:domain/verification", Verification, :verification, as: :site
+        live "/:domain/verification",
+             on_ee(do: Verification, else: AwaitingPageviews),
+             :verification,
+             as: :site
+      end
+
+      scope assigns: %{
+              dogfood_page_path: "/:website/change-domain"
+            } do
+        live "/:domain/change-domain", ChangeDomain, :change_domain, as: :site
+        live "/:domain/change-domain/success", ChangeDomain, :success, as: :site
       end
     end
 
-    get "/:domain/settings", SiteController, :settings
-    get "/:domain/settings/general", SiteController, :settings_general
     get "/:domain/settings/people", SiteController, :settings_people
     get "/:domain/settings/visibility", SiteController, :settings_visibility
-    get "/:domain/settings/goals", SiteController, :settings_goals
-    get "/:domain/settings/properties", SiteController, :settings_props
 
     on_ee do
       get "/:domain/settings/funnels", SiteController, :settings_funnels
     end
 
-    get "/:domain/settings/email-reports", SiteController, :settings_email_reports
     get "/:domain/settings/danger-zone", SiteController, :settings_danger_zone
     get "/:domain/settings/integrations", SiteController, :settings_integrations
     get "/:domain/settings/shields/:shield", SiteController, :settings_shields
     get "/:domain/settings/imports-exports", SiteController, :settings_imports_exports
 
-    put "/:domain/settings/features/visibility/:setting",
-        SiteController,
-        :update_feature_visibility
-
-    put "/:domain/settings", SiteController, :update_settings
     put "/:domain/settings/google", SiteController, :update_google_auth
     delete "/:domain/settings/google-search", SiteController, :delete_google_auth
     delete "/:domain/settings/google-import", SiteController, :delete_google_auth
@@ -583,7 +672,59 @@ defmodule PlausibleWeb.Router do
 
     get "/debug/clickhouse", DebugController, :clickhouse
 
-    get "/:domain/export", StatsController, :csv_export
-    get "/:domain/*path", StatsController, :stats
+    scope private: %{allow_consolidated_views: true} do
+      post "/sites/:domain/weekly-report/enable", SiteController, :enable_weekly_report
+      post "/sites/:domain/weekly-report/disable", SiteController, :disable_weekly_report
+      post "/sites/:domain/weekly-report/recipients", SiteController, :add_weekly_report_recipient
+
+      delete "/sites/:domain/weekly-report/recipients/:recipient",
+             SiteController,
+             :remove_weekly_report_recipient
+
+      post "/sites/:domain/monthly-report/enable", SiteController, :enable_monthly_report
+      post "/sites/:domain/monthly-report/disable", SiteController, :disable_monthly_report
+
+      post "/sites/:domain/monthly-report/recipients",
+           SiteController,
+           :add_monthly_report_recipient
+
+      delete "/sites/:domain/monthly-report/recipients/:recipient",
+             SiteController,
+             :remove_monthly_report_recipient
+
+      post "/sites/:domain/traffic-change-notification/:type/enable",
+           SiteController,
+           :enable_traffic_change_notification
+
+      post "/sites/:domain/traffic-change-notification/:type/disable",
+           SiteController,
+           :disable_traffic_change_notification
+
+      put "/sites/:domain/traffic-change-notification/:type",
+          SiteController,
+          :update_traffic_change_notification
+
+      post "/sites/:domain/traffic-change-notification/:type/recipients",
+           SiteController,
+           :add_traffic_change_notification_recipient
+
+      delete "/sites/:domain/traffic-change-notification/:type/recipients/:recipient",
+             SiteController,
+             :remove_traffic_change_notification_recipient
+
+      get "/sites/:domain/weekly-report/unsubscribe", UnsubscribeController, :weekly_report
+      get "/sites/:domain/monthly-report/unsubscribe", UnsubscribeController, :monthly_report
+
+      get "/:domain/settings", SiteController, :settings
+      get "/:domain/settings/general", SiteController, :settings_general
+      get "/:domain/settings/goals", SiteController, :settings_goals
+      get "/:domain/settings/properties", SiteController, :settings_props
+      get "/:domain/settings/email-reports", SiteController, :settings_email_reports
+
+      put "/:domain/settings", SiteController, :update_settings
+
+      get "/:domain/export", StatsController, :csv_export
+      get "/:domain/*path", StatsController, :stats
+    end
   end
 end

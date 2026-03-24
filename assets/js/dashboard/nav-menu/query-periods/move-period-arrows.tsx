@@ -1,11 +1,14 @@
 import React, { useMemo } from 'react'
-import { shiftQueryPeriod, getDateForShiftedPeriod } from '../../query'
+import {
+  shiftDashboardPeriod,
+  getDateForShiftedPeriod
+} from '../../dashboard-state'
 import classNames from 'classnames'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import { useSiteContext } from '../../site-context'
 import { NavigateKeybind } from '../../keybinding'
 import { AppNavigationLink } from '../../navigation/use-app-navigate'
-import { QueryPeriod } from '../../query-time-periods'
+import { DashboardPeriod } from '../../dashboard-time-periods'
 import { useMatch } from 'react-router-dom'
 import { rootRoute } from '../../router'
 
@@ -15,17 +18,17 @@ const ArrowKeybind = ({
   keyboardKey: 'ArrowLeft' | 'ArrowRight'
 }) => {
   const site = useSiteContext()
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
 
   const search = useMemo(
     () =>
-      shiftQueryPeriod({
-        query,
+      shiftDashboardPeriod({
+        dashboardState,
         site,
         direction: ({ ArrowLeft: -1, ArrowRight: 1 } as const)[keyboardKey],
         keybindHint: keyboardKey
       }),
-    [site, query, keyboardKey]
+    [site, dashboardState, keyboardKey]
   )
 
   return (
@@ -37,10 +40,24 @@ const ArrowKeybind = ({
   )
 }
 
-function ArrowIcon({ direction }: { direction: 'left' | 'right' }) {
+function ArrowIcon({
+  testId,
+  direction,
+  disabled = false
+}: {
+  testId?: string
+  direction: 'left' | 'right'
+  disabled?: boolean
+}) {
   return (
     <svg
-      className="feather h-4 w-4"
+      data-testid={testId}
+      className={classNames(
+        'feather size-4',
+        disabled
+          ? 'text-gray-400 dark:text-gray-600'
+          : 'text-gray-700 dark:text-gray-300'
+      )}
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
       fill="none"
@@ -57,31 +74,32 @@ function ArrowIcon({ direction }: { direction: 'left' | 'right' }) {
 
 export function MovePeriodArrows({ className }: { className?: string }) {
   const periodsWithArrows = [
-    QueryPeriod.year,
-    QueryPeriod.month,
-    QueryPeriod.day
+    DashboardPeriod.year,
+    DashboardPeriod.month,
+    DashboardPeriod.day
   ]
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const site = useSiteContext()
   const dashboardRouteMatch = useMatch(rootRoute.path)
 
-  if (!periodsWithArrows.includes(query.period)) {
+  if (!periodsWithArrows.includes(dashboardState.period)) {
     return null
   }
 
   const canGoBack =
-    getDateForShiftedPeriod({ site, query, direction: -1 }) !== null
+    getDateForShiftedPeriod({ site, dashboardState, direction: -1 }) !== null
   const canGoForward =
-    getDateForShiftedPeriod({ site, query, direction: 1 }) !== null
+    getDateForShiftedPeriod({ site, dashboardState, direction: 1 }) !== null
 
-  const sharedClass = 'flex items-center px-1 sm:px-2 dark:text-gray-100'
-  const enabledClass = 'hover:bg-gray-100 dark:hover:bg-gray-900'
-  const disabledClass = 'bg-gray-300 dark:bg-gray-950 cursor-not-allowed'
+  const sharedClass =
+    'flex items-center px-1 sm:px-2 dark:text-gray-100 transition-colors duration-150'
+  const enabledClass = 'hover:bg-gray-100 dark:hover:bg-gray-700'
+  const disabledClass = 'bg-gray-200 dark:bg-gray-850 cursor-not-allowed'
 
   return (
     <div
       className={classNames(
-        'flex rounded shadow bg-white mr-2 sm:mr-4 cursor-pointer focus:z-10 dark:bg-gray-800',
+        'flex rounded shadow bg-white mr-2 sm:mr-4 cursor-pointer focus:z-10 dark:bg-gray-750',
         className
       )}
     >
@@ -93,16 +111,20 @@ export function MovePeriodArrows({ className }: { className?: string }) {
         )}
         search={
           canGoBack
-            ? shiftQueryPeriod({
+            ? shiftDashboardPeriod({
                 site,
-                query,
+                dashboardState,
                 direction: -1,
                 keybindHint: null
               })
             : (search) => search
         }
       >
-        <ArrowIcon direction="left" />
+        <ArrowIcon
+          testId="period-move-back"
+          direction="left"
+          disabled={!canGoBack}
+        />
       </AppNavigationLink>
       <AppNavigationLink
         className={classNames(sharedClass, 'rounded-r', {
@@ -111,16 +133,20 @@ export function MovePeriodArrows({ className }: { className?: string }) {
         })}
         search={
           canGoForward
-            ? shiftQueryPeriod({
+            ? shiftDashboardPeriod({
                 site,
-                query,
+                dashboardState,
                 direction: 1,
                 keybindHint: null
               })
             : (search) => search
         }
       >
-        <ArrowIcon direction="right" />
+        <ArrowIcon
+          testId="period-move-forward"
+          direction="right"
+          disabled={!canGoForward}
+        />
       </AppNavigationLink>
       {!!dashboardRouteMatch && <ArrowKeybind keyboardKey="ArrowLeft" />}
       {!!dashboardRouteMatch && <ArrowKeybind keyboardKey="ArrowRight" />}

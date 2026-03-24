@@ -30,10 +30,11 @@ defmodule Plausible.Workers.ExportAnalytics do
     } = args
 
     site = Plausible.Repo.get!(Plausible.Site, site_id)
+    true = Plausible.Sites.regular?(site)
     %Date.Range{} = date_range = Exports.date_range(site.id, site.timezone)
 
     queries =
-      Exports.export_queries(site_id,
+      Exports.export_queries(site,
         date_range: date_range,
         timezone: site.timezone,
         extname: ".csv"
@@ -43,8 +44,7 @@ defmodule Plausible.Workers.ExportAnalytics do
     # it's ok to use start_link to keep connection lifecycle
     # bound to that of the worker
     {:ok, ch} =
-      Plausible.ClickhouseRepo.config()
-      |> Keyword.replace!(:pool_size, 1)
+      Plausible.ClickhouseRepo.get_config_without_ch_query_execution_timeout()
       |> Ch.start_link()
 
     try do
@@ -78,7 +78,7 @@ defmodule Plausible.Workers.ExportAnalytics do
       ch,
       fn conn ->
         conn
-        |> Exports.stream_archive(queries, format: "CSVWithNames")
+        |> Exports.stream_archive(queries, format: "CSVWithNames", timeout: :infinity)
         |> Plausible.S3.export_upload_multipart(s3_bucket, s3_path, filename)
       end,
       timeout: :infinity

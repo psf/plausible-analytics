@@ -1,7 +1,6 @@
 defmodule PlausibleWeb.BillingControllerTest do
   use PlausibleWeb.ConnCase, async: true
-  use Plausible.Teams.Test
-  import Plausible.Test.Support.HTML
+
   require Plausible.Billing.Subscription.Status
   alias Plausible.Billing.Subscription
 
@@ -69,8 +68,8 @@ defmodule PlausibleWeb.BillingControllerTest do
       site = new_site(owner: user)
       now = NaiveDateTime.utc_now()
 
-      generate_usage_for(site, 11_000, Timex.shift(now, days: -5))
-      generate_usage_for(site, 11_000, Timex.shift(now, days: -35))
+      generate_usage_for(site, 11_000, NaiveDateTime.shift(now, day: -5))
+      generate_usage_for(site, 11_000, NaiveDateTime.shift(now, day: -35))
 
       conn1 = post(conn, Routes.billing_path(conn, :change_plan, @v4_growth_plan))
 
@@ -146,7 +145,7 @@ defmodule PlausibleWeb.BillingControllerTest do
       assert doc =~ ~r/Up to\s*<b>\s*50M\s*<\/b>\s*monthly pageviews/
       assert doc =~ ~r/Up to\s*<b>\s*20k\s*<\/b>\s*sites/
       assert doc =~ ~r/Up to\s*<b>\s*5k\s*<\/b>\s*hourly api requests/
-      assert doc =~ ~r/The plan is priced at\s*<b>\s*€10\s*<\/b>\s*/
+      assert doc =~ ~r/The plan is priced at\s*<b>\s*€123\s*<\/b>\s*/
       assert doc =~ "per year"
     end
 
@@ -197,7 +196,7 @@ defmodule PlausibleWeb.BillingControllerTest do
       assert doc =~ ~r/Up to\s*<b>\s*50M\s*<\/b>\s*monthly pageviews/
       assert doc =~ ~r/Up to\s*<b>\s*20k\s*<\/b>\s*sites/
       assert doc =~ ~r/Up to\s*<b>\s*5k\s*<\/b>\s*hourly api requests/
-      assert doc =~ ~r/The plan is priced at\s*<b>\s*€10\s*<\/b>\s*/
+      assert doc =~ ~r/The plan is priced at\s*<b>\s*€123\s*<\/b>\s*/
       assert doc =~ "per year"
     end
 
@@ -265,7 +264,9 @@ defmodule PlausibleWeb.BillingControllerTest do
 
       assert doc =~ "Looking to adjust your plan?"
       assert doc =~ "You're currently on a custom plan."
-      assert Floki.text(doc) =~ "please contact us at hello@plausible.io"
+
+      assert LazyHTML.text(LazyHTML.from_document(doc)) =~
+               "please contact us at hello@plausible.io"
     end
   end
 
@@ -321,7 +322,7 @@ defmodule PlausibleWeb.BillingControllerTest do
       assert doc =~ ~r/Up to\s*<b>\s*50M\s*<\/b>\s*monthly pageviews/
       assert doc =~ ~r/Up to\s*<b>\s*20k\s*<\/b>\s*sites/
       assert doc =~ ~r/Up to\s*<b>\s*5k\s*<\/b>\s*hourly api requests/
-      assert doc =~ ~r/The plan is priced at\s*<b>\s*€10\s*<\/b>\s*/
+      assert doc =~ ~r/The plan is priced at\s*<b>\s*€123\s*<\/b>\s*/
       assert doc =~ "per year"
     end
 

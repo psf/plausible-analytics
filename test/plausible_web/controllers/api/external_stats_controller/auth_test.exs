@@ -1,6 +1,7 @@
 defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
   use PlausibleWeb.ConnCase
-  use Plausible.Teams.Test
+
+  alias Plausible.Repo
 
   setup [:create_user, :create_api_key]
 
@@ -47,7 +48,8 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
   end
 
   test "locked site - returns 402", %{conn: conn, api_key: api_key, user: user} do
-    site = new_site(owner: user, locked: true)
+    site = new_site(owner: user)
+    site.team |> Ecto.Changeset.change(locked: true) |> Repo.update!()
 
     conn
     |> with_api_key(api_key)
@@ -88,7 +90,8 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
       api_key: api_key,
       user: user
     } do
-      site = new_site(owner: user, locked: true)
+      site = new_site(owner: user)
+      site.team |> Ecto.Changeset.change(locked: true) |> Repo.update!()
 
       conn
       |> with_api_key(api_key)
@@ -126,7 +129,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
     |> get("/api/v1/stats/aggregate", %{"site_id" => site.domain})
     |> assert_error(
       429,
-      "Too many API requests. Your API key is limited to 3 requests per hour."
+      "Too many API requests. The limit is 3 per hour. Please contact us to request more capacity."
     )
   end
 

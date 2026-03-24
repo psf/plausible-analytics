@@ -17,9 +17,6 @@ defmodule Plausible.Billing.Feature do
     * `:toggle_field` - the field in the %Plausible.Site{} schema that toggles
     the feature. If `nil` or not set, toggle/2 silently returns `:ok`
 
-    * `:free` - if set to `true`, makes the `check_availability/1` function
-    always return `:ok` (no matter the user's subscription status)
-
   Functions defined by `__using__` can be overridden if needed.
   """
 
@@ -37,11 +34,6 @@ defmodule Plausible.Billing.Feature do
   Returns the %Plausible.Site{} field that toggles the feature on and off.
   """
   @callback toggle_field() :: atom()
-
-  @doc """
-  Returns whether the feature is free to use or not.
-  """
-  @callback free?() :: boolean()
 
   @doc """
   Toggles the feature on and off for a site. Returns
@@ -71,12 +63,16 @@ defmodule Plausible.Billing.Feature do
               :ok | {:error, :upgrade_required} | {:error, :not_implemented}
 
   @features [
-    Plausible.Billing.Feature.Goals,
-    Plausible.Billing.Feature.StatsAPI,
     Plausible.Billing.Feature.Props,
+    Plausible.Billing.Feature.SharedLinks,
     Plausible.Billing.Feature.Funnels,
+    Plausible.Billing.Feature.Goals,
     Plausible.Billing.Feature.RevenueGoals,
-    Plausible.Billing.Feature.SiteSegments
+    Plausible.Billing.Feature.SiteSegments,
+    Plausible.Billing.Feature.SitesAPI,
+    Plausible.Billing.Feature.StatsAPI,
+    Plausible.Billing.Feature.SSO,
+    Plausible.Billing.Feature.ConsolidatedView
   ]
 
   # Generate a union type for features
@@ -117,9 +113,6 @@ defmodule Plausible.Billing.Feature do
       def toggle_field, do: Keyword.get(unquote(opts), :toggle_field)
 
       @impl true
-      def free?, do: Keyword.get(unquote(opts), :free, false)
-
-      @impl true
       def enabled?(%Plausible.Site{} = site) do
         site = Plausible.Repo.preload(site, :team)
         check_availability(site.team) == :ok && !opted_out?(site)
@@ -132,10 +125,10 @@ defmodule Plausible.Billing.Feature do
 
       @impl true
       def check_availability(team_or_nil) do
-        cond do
-          free?() -> :ok
-          __MODULE__ in Plausible.Teams.Billing.allowed_features_for(team_or_nil) -> :ok
-          true -> {:error, :upgrade_required}
+        if __MODULE__ in Plausible.Teams.Billing.allowed_features_for(team_or_nil) do
+          :ok
+        else
+          {:error, :upgrade_required}
         end
       end
 
@@ -185,8 +178,7 @@ defmodule Plausible.Billing.Feature.Goals do
   use Plausible.Billing.Feature,
     name: :goals,
     display_name: "Goals",
-    toggle_field: :conversions_enabled,
-    free: true
+    toggle_field: :conversions_enabled
 end
 
 defmodule Plausible.Billing.Feature.Props do
@@ -195,6 +187,13 @@ defmodule Plausible.Billing.Feature.Props do
     name: :props,
     display_name: "Custom Properties",
     toggle_field: :props_enabled
+end
+
+defmodule Plausible.Billing.Feature.SharedLinks do
+  @moduledoc false
+  use Plausible.Billing.Feature,
+    name: :shared_links,
+    display_name: "Shared Links"
 end
 
 defmodule Plausible.Billing.Feature.SiteSegments do
@@ -211,4 +210,47 @@ defmodule Plausible.Billing.Feature.StatsAPI do
   use Plausible.Billing.Feature,
     name: :stats_api,
     display_name: "Stats API"
+end
+
+defmodule Plausible.Billing.Feature.SitesAPI do
+  use Plausible
+
+  @moduledoc false
+  use Plausible.Billing.Feature,
+    name: :sites_api,
+    display_name: "Sites API"
+end
+
+defmodule Plausible.Billing.Feature.SSO do
+  use Plausible
+
+  @moduledoc false
+  use Plausible.Billing.Feature,
+    name: :sso,
+    display_name: "Single Sign-On"
+end
+
+defmodule Plausible.Billing.Feature.ConsolidatedView do
+  use Plausible
+
+  @moduledoc false
+  use Plausible.Billing.Feature,
+    name: :consolidated_view,
+    display_name: "Consolidated View"
+end
+
+defmodule Plausible.Billing.Feature.Teams do
+  @moduledoc """
+  Unlike other feature modules, this one only exists to make feature gating
+  settings views more convenient. Other than that, it's not even considered
+  a feature on its own. The real access to "Teams" is controlled by the
+  team member limit.
+  """
+  def check_availability(team) do
+    if Plausible.Teams.Billing.solo?(team) do
+      {:error, :upgrade_required}
+    else
+      :ok
+    end
+  end
 end

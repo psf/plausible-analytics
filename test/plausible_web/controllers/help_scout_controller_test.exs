@@ -1,12 +1,9 @@
 defmodule PlausibleWeb.HelpScoutControllerTest do
   use PlausibleWeb.ConnCase, async: true
-  use Plausible
 
   @moduletag :ee_only
 
   on_ee do
-    import Plausible.Teams.Test
-
     alias Plausible.HelpScout
 
     describe "callback/2" do
@@ -50,7 +47,10 @@ defmodule PlausibleWeb.HelpScoutControllerTest do
             "/helpscout/callback?conversation-id=123&customer-id=500&X-HelpScout-Signature=#{signature}"
           )
 
-        assert html_response(conn, 200) =~ "/crm/auth/user/#{user.id}"
+        assert [] = Plug.Conn.get_resp_header(conn, "content-security-policy")
+
+        assert html_response(conn, 200) =~
+                 Routes.customer_support_user_path(PlausibleWeb.Endpoint, :show, user.id)
       end
 
       test "returns error on failure", %{conn: conn} do
@@ -129,7 +129,7 @@ defmodule PlausibleWeb.HelpScoutControllerTest do
           )
 
         assert html = html_response(conn, 200)
-        assert html =~ "/crm/auth/user/#{user.id}"
+        assert html =~ Routes.customer_support_user_path(PlausibleWeb.Endpoint, :show, user.id)
         assert html =~ "Some note<br>\nwith new line"
       end
 
@@ -158,9 +158,9 @@ defmodule PlausibleWeb.HelpScoutControllerTest do
           )
 
         assert html = html_response(conn, 200)
-        assert html =~ "/crm/auth/user/#{user.id}"
+        assert html =~ Routes.customer_support_user_path(PlausibleWeb.Endpoint, :show, user.id)
         assert html =~ "Some user notes"
-        assert html =~ "My Personal Sites"
+        assert html =~ "My personal sites"
         assert html =~ "HS Integration Test Team"
       end
 
@@ -190,7 +190,7 @@ defmodule PlausibleWeb.HelpScoutControllerTest do
 
         assert html = html_response(conn, 200)
         refute html =~ "HS Integration Test Team"
-        refute html =~ "My Personal Sites"
+        refute html =~ "My personal sites"
         assert html =~ "Some user notes"
       end
 
@@ -220,7 +220,7 @@ defmodule PlausibleWeb.HelpScoutControllerTest do
 
         assert html = html_response(conn, 200)
         assert html =~ "HS Integration Test Team"
-        refute html =~ "My Personal Sites"
+        refute html =~ "My personal sites"
         assert html =~ "Some user notes"
       end
 

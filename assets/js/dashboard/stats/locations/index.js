@@ -13,12 +13,17 @@ import {
 } from '../../util/filters'
 import ImportedQueryUnsupportedWarning from '../imported-query-unsupported-warning'
 import { citiesRoute, countriesRoute, regionsRoute } from '../../router'
-import { useQueryContext } from '../../query-context'
+import { useDashboardStateContext } from '../../dashboard-state-context'
 import { useSiteContext } from '../../site-context'
+import { ReportLayout } from '../reports/report-layout'
+import { ReportHeader } from '../reports/report-header'
+import { TabButton, TabWrapper } from '../../components/tabs'
+import MoreLink from '../more-link'
+import { MoreLinkState } from '../more-link-state'
 
-function Countries({ query, site, onClick, afterFetchData }) {
+function Countries({ dashboardState, site, onClick, afterFetchData }) {
   function fetchData() {
-    return api.get(apiPath(site, '/countries'), query, { limit: 9 })
+    return api.get(apiPath(site, '/countries'), dashboardState, { limit: 9 })
   }
 
   function renderIcon(country) {
@@ -36,7 +41,9 @@ function Countries({ query, site, onClick, afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({ meta: { plot: true } }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -48,19 +55,15 @@ function Countries({ query, site, onClick, afterFetchData }) {
       onClick={onClick}
       keyLabel="Country"
       metrics={chooseMetrics()}
-      detailsLinkProps={{
-        path: countriesRoute.path,
-        search: (search) => search
-      }}
       renderIcon={renderIcon}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
 }
 
-function Regions({ query, site, onClick, afterFetchData }) {
+function Regions({ dashboardState, site, onClick, afterFetchData }) {
   function fetchData() {
-    return api.get(apiPath(site, '/regions'), query, { limit: 9 })
+    return api.get(apiPath(site, '/regions'), dashboardState, { limit: 9 })
   }
 
   function renderIcon(region) {
@@ -78,7 +81,9 @@ function Regions({ query, site, onClick, afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({ meta: { plot: true } }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -90,16 +95,15 @@ function Regions({ query, site, onClick, afterFetchData }) {
       onClick={onClick}
       keyLabel="Region"
       metrics={chooseMetrics()}
-      detailsLinkProps={{ path: regionsRoute.path, search: (search) => search }}
       renderIcon={renderIcon}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
 }
 
-function Cities({ query, site, afterFetchData }) {
+function Cities({ dashboardState, site, afterFetchData }) {
   function fetchData() {
-    return api.get(apiPath(site, '/cities'), query, { limit: 9 })
+    return api.get(apiPath(site, '/cities'), dashboardState, { limit: 9 })
   }
 
   function renderIcon(city) {
@@ -117,7 +121,9 @@ function Cities({ query, site, afterFetchData }) {
   function chooseMetrics() {
     return [
       metrics.createVisitors({ meta: { plot: true } }),
-      hasConversionGoalFilter(query) && metrics.createConversionRate()
+      !hasConversionGoalFilter(dashboardState) &&
+        metrics.createPercentage({ meta: { showOnHover: true } }),
+      hasConversionGoalFilter(dashboardState) && metrics.createConversionRate()
     ].filter((metric) => !!metric)
   }
 
@@ -128,17 +134,10 @@ function Cities({ query, site, afterFetchData }) {
       getFilterInfo={getFilterInfo}
       keyLabel="City"
       metrics={chooseMetrics()}
-      detailsLinkProps={{ path: citiesRoute.path, search: (search) => search }}
       renderIcon={renderIcon}
-      color="bg-orange-50"
+      color="bg-orange-50 group-hover/row:bg-orange-100"
     />
   )
-}
-
-const labelFor = {
-  countries: 'Countries',
-  regions: 'Regions',
-  cities: 'Cities'
 }
 
 class Locations extends React.Component {
@@ -152,15 +151,17 @@ class Locations extends React.Component {
     this.state = {
       mode: storedTab || 'map',
       loading: true,
-      skipImportedReason: null
+      skipImportedReason: null,
+      moreLinkState: MoreLinkState.LOADING
     }
   }
 
   componentDidUpdate(prevProps, prevState) {
     const isRemovingFilter = (filterName) => {
       return (
-        getFiltersByKeyPrefix(prevProps.query, filterName).length > 0 &&
-        getFiltersByKeyPrefix(this.props.query, filterName).length == 0
+        getFiltersByKeyPrefix(prevProps.dashboardState, filterName).length >
+          0 &&
+        getFiltersByKeyPrefix(this.props.dashboardState, filterName).length == 0
       )
     }
 
@@ -173,10 +174,10 @@ class Locations extends React.Component {
     }
 
     if (
-      this.props.query !== prevProps.query ||
+      this.props.dashboardState !== prevProps.dashboardState ||
       this.state.mode !== prevState.mode
     ) {
-      this.setState({ loading: true })
+      this.setState({ loading: true, moreLinkState: MoreLinkState.LOADING })
     }
   }
 
@@ -199,8 +200,16 @@ class Locations extends React.Component {
   }
 
   afterFetchData(apiResponse) {
+    let newMoreLinkState
+
+    if (apiResponse.results && apiResponse.results.length > 0) {
+      newMoreLinkState = MoreLinkState.READY
+    } else {
+      newMoreLinkState = MoreLinkState.HIDDEN
+    }
     this.setState({
       loading: false,
+      moreLinkState: newMoreLinkState,
       skipImportedReason: apiResponse.skip_imported_reason
     })
   }
@@ -211,7 +220,7 @@ class Locations extends React.Component {
         return (
           <Cities
             site={this.props.site}
-            query={this.props.query}
+            dashboardState={this.props.dashboardState}
             afterFetchData={this.afterFetchData}
           />
         )
@@ -220,7 +229,7 @@ class Locations extends React.Component {
           <Regions
             onClick={this.onRegionFilter}
             site={this.props.site}
-            query={this.props.query}
+            dashboardState={this.props.dashboardState}
             afterFetchData={this.afterFetchData}
           />
         )
@@ -229,7 +238,7 @@ class Locations extends React.Component {
           <Countries
             onClick={this.onCountryFilter('countries')}
             site={this.props.site}
-            query={this.props.query}
+            dashboardState={this.props.dashboardState}
             afterFetchData={this.afterFetchData}
           />
         )
@@ -244,56 +253,63 @@ class Locations extends React.Component {
     }
   }
 
-  renderPill(name, mode) {
-    const isActive = this.state.mode === mode
+  getMoreLinkProps() {
+    let path
 
-    if (isActive) {
-      return (
-        <button className="inline-block h-5 text-indigo-700 dark:text-indigo-500 font-bold active-prop-heading">
-          {name}
-        </button>
-      )
+    if (this.state.mode === 'regions') {
+      path = regionsRoute.path
+    } else if (this.state.mode === 'cities') {
+      path = citiesRoute.path
+    } else {
+      path = countriesRoute.path
     }
 
-    return (
-      <button
-        className="hover:text-indigo-600 cursor-pointer"
-        onClick={this.setMode(mode)}
-      >
-        {name}
-      </button>
-    )
+    return { path: path, search: (search) => search }
   }
 
   render() {
     return (
-      <div>
-        <div className="w-full flex justify-between">
-          <div className="flex gap-x-1">
-            <h3 className="font-bold dark:text-gray-100">
-              {labelFor[this.state.mode] || 'Locations'}
-            </h3>
+      <ReportLayout
+        testId="report-locations"
+        className={this.state.mode === 'map' ? '' : 'overflow-x-hidden'}
+      >
+        <ReportHeader>
+          <div className="flex gap-x-3">
+            <TabWrapper>
+              {[
+                { label: 'Map', value: 'map' },
+                { label: 'Countries', value: 'countries' },
+                { label: 'Regions', value: 'regions' },
+                { label: 'Cities', value: 'cities' }
+              ].map(({ value, label }) => (
+                <TabButton
+                  key={value}
+                  onClick={this.setMode(value)}
+                  active={this.state.mode === value}
+                >
+                  {label}
+                </TabButton>
+              ))}
+            </TabWrapper>
             <ImportedQueryUnsupportedWarning
               loading={this.state.loading}
               skipImportedReason={this.state.skipImportedReason}
             />
           </div>
-          <div className="flex text-xs font-medium text-gray-500 dark:text-gray-400 space-x-2">
-            {this.renderPill('Map', 'map')}
-            {this.renderPill('Countries', 'countries')}
-            {this.renderPill('Regions', 'regions')}
-            {this.renderPill('Cities', 'cities')}
-          </div>
-        </div>
+          <MoreLink
+            linkProps={this.getMoreLinkProps()}
+            state={this.state.moreLinkState}
+          />
+        </ReportHeader>
         {this.renderContent()}
-      </div>
+      </ReportLayout>
     )
   }
 }
 
 function LocationsWithContext() {
-  const { query } = useQueryContext()
+  const { dashboardState } = useDashboardStateContext()
   const site = useSiteContext()
-  return <Locations site={site} query={query} />
+  return <Locations site={site} dashboardState={dashboardState} />
 }
 export default LocationsWithContext

@@ -2,23 +2,42 @@ defmodule Plausible.Stats.IntervalTest do
   use Plausible.DataCase, async: true
 
   import Plausible.Stats.Interval
-  alias Plausible.Stats.DateTimeRange
+  alias Plausible.Stats.{DateTimeRange, Query}
 
-  test "default_for_period/1" do
-    assert default_for_period("realtime") == "minute"
-    assert default_for_period("day") == "hour"
-    assert default_for_period("7d") == "day"
-    assert default_for_period("12mo") == "month"
+  defp build_query(params) do
+    params =
+      %{metrics: [:visitors]}
+      |> Map.merge(params)
+      |> Map.to_list()
+
+    struct!(Query, params)
   end
 
-  test "default_for_date_range/1" do
-    year = DateTimeRange.new!(~D[2022-01-01], ~D[2023-01-01], "UTC")
-    fifteen_days = DateTimeRange.new!(~D[2022-01-01], ~D[2022-01-15], "UTC")
-    day = DateTimeRange.new!(~D[2022-01-01], ~D[2022-01-01], "UTC")
+  describe "default_for_query/1" do
+    test "by input_date_range" do
+      assert default_for_query(build_query(%{input_date_range: :realtime})) == "minute"
+      assert default_for_query(build_query(%{input_date_range: :day})) == "hour"
+      assert default_for_query(build_query(%{input_date_range: :"24h"})) == "hour"
+      assert default_for_query(build_query(%{input_date_range: {:last_n_days, 7}})) == "day"
+      assert default_for_query(build_query(%{input_date_range: {:last_n_months, 12}})) == "month"
+    end
 
-    assert default_for_date_range(year) == "month"
-    assert default_for_date_range(fifteen_days) == "day"
-    assert default_for_date_range(day) == "hour"
+    test "by utc_time_range when period input_date_range is :all" do
+      year = DateTimeRange.new!(~D[2022-01-01], ~D[2023-01-01], "UTC")
+      fifteen_days = DateTimeRange.new!(~D[2022-01-01], ~D[2022-01-15], "UTC")
+      day = DateTimeRange.new!(~D[2022-01-01], ~D[2022-01-01], "UTC")
+
+      assert default_for_query(build_query(%{input_date_range: :all, utc_time_range: year})) ==
+               "month"
+
+      assert default_for_query(
+               build_query(%{input_date_range: :all, utc_time_range: fifteen_days})
+             ) ==
+               "day"
+
+      assert default_for_query(build_query(%{input_date_range: :all, utc_time_range: day})) ==
+               "hour"
+    end
   end
 
   describe "valid_by_period/1" do
@@ -28,6 +47,7 @@ defmodule Plausible.Stats.IntervalTest do
       assert valid_by_period(site: site) == %{
                "realtime" => ["minute"],
                "day" => ["minute", "hour"],
+               "24h" => ["minute", "hour"],
                "month" => ["day", "week"],
                "7d" => ["hour", "day"],
                "28d" => ["day", "week"],
@@ -42,11 +62,12 @@ defmodule Plausible.Stats.IntervalTest do
     end
 
     test "for a site with stats starting over 12m ago" do
-      site = build(:site, stats_start_date: Timex.shift(Date.utc_today(), months: -13))
+      site = build(:site, stats_start_date: Date.shift(Date.utc_today(), month: -13))
 
       assert valid_by_period(site: site) == %{
                "realtime" => ["minute"],
                "day" => ["minute", "hour"],
+               "24h" => ["minute", "hour"],
                "month" => ["day", "week"],
                "7d" => ["hour", "day"],
                "28d" => ["day", "week"],
@@ -61,12 +82,13 @@ defmodule Plausible.Stats.IntervalTest do
     end
 
     test "for a query range exceeding 12m" do
-      ago_13m = Timex.shift(Date.utc_today(), months: -13)
+      ago_13m = Date.shift(Date.utc_today(), month: -13)
       site = build(:site, stats_start_date: ago_13m)
 
       assert valid_by_period(site: site, from: ago_13m, to: Date.utc_today()) == %{
                "realtime" => ["minute"],
                "day" => ["minute", "hour"],
+               "24h" => ["minute", "hour"],
                "month" => ["day", "week"],
                "7d" => ["hour", "day"],
                "28d" => ["day", "week"],
@@ -124,7 +146,7 @@ defmodule Plausible.Stats.IntervalTest do
     end
 
     test "for a site with stats starting over 12m ago" do
-      site = build(:site, stats_start_date: Timex.shift(Date.utc_today(), months: -13))
+      site = build(:site, stats_start_date: Date.shift(Date.utc_today(), month: -13))
       refute valid_for_period?("all", "day", site: site)
 
       assert valid_for_period?("custom", "day",

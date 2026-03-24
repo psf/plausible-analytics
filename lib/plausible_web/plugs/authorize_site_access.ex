@@ -81,6 +81,7 @@ defmodule PlausibleWeb.Plugs.AuthorizeSiteAccess do
     with {:ok, domain} <- get_domain(conn, site_param),
          {:ok, %{site: site, role: membership_role, member_type: member_type}} <-
            get_site_with_role(conn, current_user, domain),
+         :ok <- ensure_consolidated_view_access(conn, site),
          {:ok, shared_link} <- maybe_get_shared_link(conn, site) do
       role =
         cond do
@@ -117,7 +118,7 @@ defmodule PlausibleWeb.Plugs.AuthorizeSiteAccess do
             team: [:owners, subscription: Teams.last_subscription_query()]
           ])
 
-        conn = merge_assigns(conn, site: site, site_role: role)
+        conn = merge_assigns(conn, site: site, site_role: role, shared_link: shared_link)
 
         # Switch current team if user is a team member in it
         conn =
@@ -188,14 +189,30 @@ defmodule PlausibleWeb.Plugs.AuthorizeSiteAccess do
     end
   end
 
+  defp ensure_consolidated_view_access(conn, site) do
+    if Plausible.Sites.consolidated?(site) && !conn.private[:allow_consolidated_views] do
+      error_not_found(conn)
+    else
+      :ok
+    end
+  end
+
   defp maybe_get_shared_link(conn, site) do
     slug = conn.path_params["slug"] || conn.params["auth"]
 
     if valid_path_fragment?(slug) do
-      if shared_link = Repo.get_by(Plausible.Site.SharedLink, slug: slug, site_id: site.id) do
+      with %Plausible.Site.SharedLink{} = shared_link <-
+             Repo.get_by(Plausible.Site.SharedLink, slug: slug, site_id: site.id),
+           {%{password_protected?: true}, shared_link} <-
+             {%{password_protected?: Plausible.Site.SharedLink.password_protected?(shared_link)},
+              shared_link},
+           {:ok, shared_link} <-
+             PlausibleWeb.StatsController.validate_shared_link_password(conn, shared_link) do
         {:ok, shared_link}
       else
-        error_not_found(conn)
+        {%{password_protected?: false}, shared_link} -> {:ok, shared_link}
+        {:error, :unauthorized} -> error_not_found(conn)
+        nil -> error_not_found(conn)
       end
     else
       {:ok, nil}

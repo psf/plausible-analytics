@@ -18,6 +18,10 @@ defmodule Plausible.DataCase do
     quote do
       use Plausible.Repo
       use Plausible.TestUtils
+      use Plausible
+      use Plausible.Teams.Test
+
+      import Plausible.Test.Support.HTML
 
       import Ecto.Changeset
       import Plausible.DataCase
@@ -32,6 +36,8 @@ defmodule Plausible.DataCase do
     unless tags[:async] do
       Ecto.Adapters.SQL.Sandbox.mode(Plausible.Repo, {:shared, self()})
     end
+
+    Plausible.Test.Support.Sandbox.allow_salts_process()
 
     :ok
   end

@@ -2,7 +2,7 @@ import Config
 import Plausible.ConfigHelpers
 require Logger
 
-if config_env() in [:dev, :test] do
+if config_env() in [:dev, :test, :load] do
   Envy.load(["config/.env.#{config_env()}"])
 end
 
@@ -12,6 +12,10 @@ end
 
 if config_env() == :ce_test do
   Envy.load(["config/.env.test"])
+end
+
+if config_env() == :e2e_test do
+  Envy.load(["config/.env.e2e_test"])
 end
 
 config_dir = System.get_env("CONFIG_DIR", "/run/secrets")
@@ -27,7 +31,7 @@ log_level =
   |> String.to_existing_atom()
 
 config :logger, level: log_level
-config :logger, :default_formatter, metadata: [:request_id]
+config :logger, :default_formatter, metadata: [:request_id, :trace_id]
 
 config :logger, Sentry.LoggerBackend,
   capture_log_messages: true,
@@ -143,6 +147,25 @@ end
   |> get_var_from_path_or_env("CLICKHOUSE_MAX_BUFFER_SIZE_BYTES", "100000")
   |> Integer.parse()
 
+persistor_backend =
+  case get_var_from_path_or_env(config_dir, "PERSISTOR_BACKEND", "embedded") do
+    "embedded" -> Plausible.Ingestion.Persistor.Embedded
+    "embedded_with_relay" -> Plausible.Ingestion.Persistor.EmbeddedWithRelay
+    "remote" -> Plausible.Ingestion.Persistor.Remote
+  end
+
+{persistor_backend_percent_enabled, ""} =
+  config_dir
+  |> get_var_from_path_or_env("PERSISTOR_BACKEND_PERCENT_ENABLED", "0")
+  |> Integer.parse()
+
+persistor_url =
+  get_var_from_path_or_env(config_dir, "PERSISTOR_URL", "http://localhost:8001/event")
+
+persistor_count = get_int_from_path_or_env(config_dir, "PERSISTOR_COUNT", 200)
+
+persistor_timeout_ms = get_int_from_path_or_env(config_dir, "PERSISTOR_TIMEOUT_MS", 10_000)
+
 # Can be generated  with `Base.encode64(:crypto.strong_rand_bytes(32))` from
 # iex shell or `openssl rand -base64 32` from command line.
 totp_vault_key =
@@ -217,10 +240,8 @@ help_scout_app_secret = get_var_from_path_or_env(config_dir, "HELP_SCOUT_APP_SEC
 help_scout_signature_key = get_var_from_path_or_env(config_dir, "HELP_SCOUT_SIGNATURE_KEY")
 help_scout_vault_key = get_var_from_path_or_env(config_dir, "HELP_SCOUT_VAULT_KEY")
 
-{otel_sampler_ratio, ""} =
-  config_dir
-  |> get_var_from_path_or_env("OTEL_SAMPLER_RATIO", "0.5")
-  |> Float.parse()
+otlp_endpoint =
+  get_var_from_path_or_env(config_dir, "OTLP_ENDPOINT", "https://api.honeycomb.io:443")
 
 geolite2_country_db =
   get_var_from_path_or_env(
@@ -239,6 +260,13 @@ persistent_cache_dir = get_var_from_path_or_env(config_dir, "PERSISTENT_CACHE_DI
 # DEFAULT_DATA_DIR comes from the container image, please see our Dockerfile
 data_dir = data_dir || persistent_cache_dir || System.get_env("DEFAULT_DATA_DIR")
 persistent_cache_dir = persistent_cache_dir || data_dir
+
+session_transfer_dir =
+  if get_bool_from_path_or_env(config_dir, "ENABLE_SESSION_TRANSFER", config_env() == :prod) do
+    if persistent_cache_dir do
+      Path.join(persistent_cache_dir, "sessions")
+    end
+  end
 
 enable_email_verification =
   get_bool_from_path_or_env(config_dir, "ENABLE_EMAIL_VERIFICATION", false)
@@ -299,6 +327,29 @@ secure_cookie =
 
 license_key = get_var_from_path_or_env(config_dir, "LICENSE_KEY", "")
 
+sso_saml_adapter =
+  case get_var_from_path_or_env(config_dir, "SSO_SAML_ADAPTER", "fake") do
+    "fake" -> PlausibleWeb.SSO.FakeSAMLAdapter
+    "real" -> PlausibleWeb.SSO.RealSAMLAdapter
+  end
+
+sso_verification_nameservers =
+  case get_var_from_path_or_env(config_dir, "SSO_VERIFICATION_NAMESERVERS") do
+    nil ->
+      nil
+
+    some when is_binary(some) ->
+      some
+      |> String.split(",")
+      |> Enum.map(fn addr ->
+        uri = URI.parse("dns://#{addr}")
+        host = uri.host
+        port = uri.port || 53
+        {:ok, addr} = :inet.parse_address(to_charlist(host))
+        {addr, port}
+      end)
+  end
+
 config :plausible,
   environment: env,
   mailer_email: mailer_email,
@@ -307,7 +358,10 @@ config :plausible,
   custom_script_name: custom_script_name,
   log_failed_login_attempts: log_failed_login_attempts,
   license_key: license_key,
-  data_dir: data_dir
+  data_dir: data_dir,
+  session_transfer_dir: session_transfer_dir,
+  sso_saml_adapter: sso_saml_adapter,
+  sso_verification_nameservers: sso_verification_nameservers
 
 config :plausible, :selfhost,
   enable_email_verification: enable_email_verification,
@@ -323,7 +377,8 @@ config :plausible, PlausibleWeb.Endpoint,
   http: [port: http_port, ip: listen_ip] ++ default_http_opts,
   secret_key_base: secret_key_base,
   websocket_url: websocket_url,
-  secure_cookie: secure_cookie
+  secure_cookie: secure_cookie,
+  base_url: base_url
 
 if http_uds do
   uds_bind = [ip: {:local, http_uds}, port: 0]
@@ -476,13 +531,48 @@ if db_socket_dir? do
       password: password
   end
 else
-  config :plausible, Plausible.Repo,
-    url: db_url,
-    socket_options: db_maybe_ipv6
+  config :plausible, Plausible.Repo, url: db_url
 
-  if db_cacertfile do
-    config :plausible, Plausible.Repo, ssl: [cacertfile: db_cacertfile]
+  unless Enum.empty?(db_maybe_ipv6) do
+    config :plausible, Plausible.Repo, socket_options: db_maybe_ipv6
   end
+
+  db_query = URI.decode_query(db_uri.query || "")
+  # https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
+  pg_sslmode = db_query["sslmode"]
+
+  pg_ssl =
+    cond do
+      db_cacertfile ->
+        [cacertfile: db_cacertfile, verify: :verify_peer]
+
+      pg_sslmode == "verify-full" ->
+        if pg_sslrootcert = db_query["sslrootcert"] do
+          [cacertfile: pg_sslrootcert, verify: :verify_peer]
+        else
+          raise ArgumentError,
+                "PostgreSQL SSL mode `sslmode=#{pg_sslmode}` requires a certificate, set it in `sslrootcert`"
+        end
+
+      pg_sslmode == "verify-ca" ->
+        [cacerts: :public_key.cacerts_get(), verify: :verify_peer]
+
+      pg_sslmode == "require" ->
+        [verify: :verify_none]
+
+      pg_sslmode == "disable" ->
+        false
+
+      pg_sslmode ->
+        raise ArgumentError,
+              "PostgreSQL SSL mode `sslmode=#{pg_sslmode}` is not supported, use `disable`, `require`, `verify-ca` or `verify-full` instead"
+
+      true ->
+        # tls is disabled by default, because in self-hosted docker compose postgres is co-located
+        false
+    end
+
+  config :plausible, Plausible.Repo, ssl: pg_ssl
 end
 
 sentry_app_version = runtime_metadata[:version] || app_version
@@ -544,11 +634,19 @@ ch_transport_opts =
 config :plausible, Plausible.ClickhouseRepo,
   queue_target: 500,
   queue_interval: 2000,
+  timeout: 15_000,
   url: ch_db_url,
   transport_opts: ch_transport_opts,
   settings: [
     readonly: 1,
-    join_algorithm: "direct,parallel_hash,hash"
+    join_algorithm: "direct,parallel_hash,hash",
+    # stops queries when :timeout ClickhouseRepo connection :timeout value reached
+    cancel_http_readonly_queries_on_client_close: 1,
+    # stops queries when they will likely take over 20s
+    # NB! when :timeout is overridden to be over 20s,
+    # for it to have meaningful effect,
+    # this must be overridden as well
+    max_execution_time: 20
   ]
 
 config :plausible, Plausible.IngestRepo,
@@ -584,6 +682,15 @@ config :plausible, Plausible.ImportDeletionRepo,
   url: ch_db_url,
   transport_opts: ch_transport_opts,
   pool_size: 1
+
+config :plausible, Plausible.Ingestion.Persistor,
+  backend: persistor_backend,
+  backend_percent_enabled: persistor_backend_percent_enabled
+
+config :plausible, Plausible.Ingestion.Persistor.Remote,
+  url: persistor_url,
+  count: persistor_count,
+  timeout_ms: persistor_timeout_ms
 
 config :ex_money,
   open_exchange_rates_app_id: get_var_from_path_or_env(config_dir, "OPEN_EXCHANGE_RATES_APP_ID"),
@@ -751,7 +858,9 @@ cloud_queues = [
   check_usage: 1,
   notify_annual_renewal: 1,
   lock_sites: 1,
-  legacy_time_on_page_cutoff: 1
+  legacy_time_on_page_cutoff: 1,
+  purge_cdn_cache: 1,
+  sso_domain_ownership_verification: 32
 ]
 
 queues = if(is_selfhost, do: base_queues, else: base_queues ++ cloud_queues)
@@ -759,7 +868,7 @@ cron_enabled = !disable_cron
 
 thirty_days_in_seconds = 60 * 60 * 24 * 30
 
-if config_env() in [:prod, :ce] do
+if config_env() in [:prod, :ce, :load] do
   config :plausible, Oban,
     repo: Plausible.Repo,
     plugins: [
@@ -776,8 +885,7 @@ if config_env() in [:prod, :ce] do
 else
   config :plausible, Oban,
     repo: Plausible.Repo,
-    queues: queues,
-    plugins: false
+    queues: queues
 end
 
 config :plausible, :hcaptcha,
@@ -793,46 +901,15 @@ config :plausible, Plausible.Sentry.Client,
     receive_timeout: get_int_from_path_or_env(config_dir, "SENTRY_FINCH_RECEIVE_TIMEOUT", 15000)
   ]
 
+config :plausible, Plausible.Workers.PurgeCDNCache,
+  pullzone_id: get_var_from_path_or_env(config_dir, "BUNNY_PULLZONE_ID"),
+  api_key: get_var_from_path_or_env(config_dir, "BUNNY_API_KEY")
+
 config :ref_inspector,
   init: {Plausible.Release, :configure_ref_inspector}
 
 config :ua_inspector,
   init: {Plausible.Release, :configure_ua_inspector}
-
-if config_env() in [:dev, :staging, :prod, :test] do
-  config :kaffy,
-    otp_app: :plausible,
-    ecto_repo: Plausible.Repo,
-    router: PlausibleWeb.Router,
-    admin_title: "Plausible Admin",
-    extensions: [Plausible.CrmExtensions],
-    resources: [
-      auth: [
-        resources: [
-          user: [schema: Plausible.Auth.User, admin: Plausible.Auth.UserAdmin],
-          api_key: [schema: Plausible.Auth.ApiKey, admin: Plausible.Auth.ApiKeyAdmin]
-        ]
-      ],
-      teams: [
-        resources: [
-          team: [schema: Plausible.Teams.Team, admin: Plausible.Teams.TeamAdmin]
-        ]
-      ],
-      sites: [
-        resources: [
-          site: [schema: Plausible.Site, admin: Plausible.SiteAdmin]
-        ]
-      ],
-      billing: [
-        resources: [
-          enterprise_plan: [
-            schema: Plausible.Billing.EnterprisePlan,
-            admin: Plausible.Billing.EnterprisePlanAdmin
-          ]
-        ]
-      ]
-    ]
-end
 
 geo_opts =
   cond do
@@ -875,13 +952,12 @@ end
 if honeycomb_api_key && honeycomb_dataset do
   config :opentelemetry,
     resource: Plausible.OpenTelemetry.resource_attributes(runtime_metadata),
-    sampler: {Plausible.OpenTelemetry.Sampler, %{ratio: otel_sampler_ratio}},
     span_processor: :batch,
     traces_exporter: :otlp
 
   config :opentelemetry_exporter,
     otlp_protocol: :grpc,
-    otlp_endpoint: "https://api.honeycomb.io:443",
+    otlp_endpoint: otlp_endpoint,
     otlp_headers: [
       {"x-honeycomb-team", honeycomb_api_key},
       {"x-honeycomb-dataset", honeycomb_dataset}
@@ -890,6 +966,30 @@ else
   config :opentelemetry,
     sampler: :always_off,
     traces_exporter: :none
+end
+
+beam_metrics_enabled? = get_bool_from_path_or_env(config_dir, "BEAM_METRICS_ENABLED", false)
+
+if beam_metrics_enabled? do
+  beam_metrics_interval = get_int_from_path_or_env(config_dir, "BEAM_METRICS_INTERVAL_MS", 5_000)
+
+  beam_metrics_otlp_endpoint =
+    get_var_from_path_or_env(config_dir, "OTEL_EXPORTER_OTLP_ENDPOINT") || otlp_endpoint
+
+  config :opentelemetry_experimental,
+    readers: [
+      %{
+        module: :otel_metric_reader,
+        config: %{
+          export_interval_ms: beam_metrics_interval,
+          exporter:
+            {:otel_exporter_metrics_otlp,
+             %{
+               endpoints: [beam_metrics_otlp_endpoint]
+             }}
+        }
+      }
+    ]
 end
 
 config :tzdata, :data_dir, Path.join(persistent_cache_dir || System.tmp_dir!(), "tzdata_data")
@@ -903,7 +1003,7 @@ config :plausible, Plausible.PromEx,
   grafana: :disabled,
   metrics_server: :disabled
 
-config :plausible, Plausible.Verification.Checks.Installation,
+config :plausible, Plausible.InstallationSupport.BrowserlessConfig,
   token: get_var_from_path_or_env(config_dir, "BROWSERLESS_TOKEN", "dummy_token"),
   endpoint: get_var_from_path_or_env(config_dir, "BROWSERLESS_ENDPOINT", "http://0.0.0.0:3000")
 

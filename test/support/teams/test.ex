@@ -2,6 +2,8 @@ defmodule Plausible.Teams.Test do
   @moduledoc """
   Convenience assertions for teams schema transition
   """
+  use Plausible
+
   alias Plausible.Repo
   alias Plausible.Teams
 
@@ -19,6 +21,14 @@ defmodule Plausible.Teams.Test do
 
   def set_current_team(conn, team) do
     Plug.Conn.put_session(conn, :current_team_id, team.identifier)
+  end
+
+  on_ee do
+    def new_consolidated_view(team) do
+      team = Teams.complete_setup(team)
+      {:ok, site} = Plausible.ConsolidatedView.enable(team)
+      site
+    end
   end
 
   def new_site(args \\ []) do
@@ -47,15 +57,14 @@ defmodule Plausible.Teams.Test do
     |> insert(args)
   end
 
-  def new_team() do
-    new_user()
-    |> Map.fetch!(:team_memberships)
-    |> List.first()
-  end
-
   def new_user(args \\ []) do
     {team_args, args} = Keyword.pop(args, :team, [])
     {trial_expiry_date, args} = Keyword.pop(args, :trial_expiry_date)
+
+    on_ee do
+      args = Keyword.merge([type: :standard], args)
+    end
+
     user = insert(:user, args)
 
     trial_expiry_date =
@@ -100,6 +109,13 @@ defmodule Plausible.Teams.Test do
 
       _ ->
         nil
+    end
+  end
+
+  def add_site_guest_or_team_member(site, args \\ []) do
+    case Keyword.pop!(args, :membership_type) do
+      {:site_guest, args} -> add_guest(site, args)
+      {:team_member, args} -> add_member(site.team, args)
     end
   end
 
@@ -224,19 +240,41 @@ defmodule Plausible.Teams.Test do
     user |> Repo.preload(:team_memberships)
   end
 
-  def subscribe_to_growth_plan(user, attrs \\ []) do
+  def subscribe_to_starter_plan(user, attrs \\ []) do
     {:ok, team} = Teams.get_or_create(user)
     attrs = Keyword.merge([team: team], attrs)
 
-    insert(:growth_subscription, attrs)
+    insert(:starter_subscription, attrs)
     user
   end
 
-  def subscribe_to_business_plan(user) do
-    {:ok, team} = Teams.get_or_create(user)
+  def subscribe_to_growth_plan(user_or_team, attrs \\ [])
 
-    insert(:business_subscription, team: team)
+  def subscribe_to_growth_plan(%Plausible.Auth.User{} = user, attrs) do
+    {:ok, team} = Teams.get_or_create(user)
+    attrs = Keyword.merge([team: team], attrs)
+
+    subscribe_to_growth_plan(team, attrs)
     user
+  end
+
+  def subscribe_to_growth_plan(%Plausible.Teams.Team{} = team, attrs) do
+    attrs = Keyword.merge([team: team], attrs)
+
+    insert(:growth_subscription, attrs)
+    team
+  end
+
+  def subscribe_to_business_plan(%Plausible.Auth.User{} = user) do
+    {:ok, team} = Teams.get_or_create(user)
+    subscribe_to_business_plan(team)
+
+    user
+  end
+
+  def subscribe_to_business_plan(%Plausible.Teams.Team{} = team) do
+    insert(:business_subscription, team: team)
+    team
   end
 
   def subscribe_to_plan(user, paddle_plan_id, attrs \\ []) do
@@ -398,5 +436,31 @@ defmodule Plausible.Teams.Test do
     team
     |> Plausible.Teams.with_subscription()
     |> Map.fetch!(:subscription)
+  end
+
+  on_ee do
+    def audited_entry(name, attrs \\ []) do
+      attrs = Keyword.put(attrs, :name, name)
+
+      case Plausible.Audit.list_entries(attrs) do
+        [entry] ->
+          entry
+
+        _ ->
+          raise "Expected audited entry #{inspect(attrs)} but only found #{inspect(Plausible.Audit.list_entries([]), pretty: true)}."
+      end
+    end
+
+    def audited_entries(length, name, attrs \\ []) do
+      attrs = Keyword.put(attrs, :name, name)
+
+      case Plausible.Audit.list_entries(attrs) do
+        entries when is_list(entries) and length(entries) == length ->
+          entries
+
+        _ ->
+          raise "Expected audited entry #{inspect(attrs)} but only found #{inspect(Plausible.Audit.list_entries([]), pretty: true)}."
+      end
+    end
   end
 end

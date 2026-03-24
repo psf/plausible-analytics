@@ -7,7 +7,7 @@ defmodule Plausible.Stats.Timeseries do
 
   use Plausible
   use Plausible.ClickhouseRepo
-  alias Plausible.Stats.{Comparisons, Query, QueryRunner, QueryOptimizer, Metrics, Time}
+  alias Plausible.Stats.{Comparisons, Query, QueryRunner, Metrics, Time, QueryOptimizer}
 
   @time_dimension %{
     "month" => "time:month",
@@ -23,13 +23,13 @@ defmodule Plausible.Stats.Timeseries do
       |> Query.set(
         metrics: transform_metrics(metrics, %{conversion_rate: :group_conversion_rate}),
         dimensions: [time_dimension(query)],
-        order_by: [{time_dimension(query), :asc}],
-        remove_unavailable_revenue_metrics: true
+        order_by: [{time_dimension(query), :asc}]
       )
+      |> Query.set_include(:drop_unavailable_revenue_metrics, true)
       |> QueryOptimizer.optimize()
 
     comparison_query =
-      if(query.include.comparisons,
+      if(query.include.compare,
         do: Comparisons.get_comparison_query(query),
         else: nil
       )
@@ -97,7 +97,7 @@ defmodule Plausible.Stats.Timeseries do
     end)
   end
 
-  defp transform_realtime_labels(results, %Query{period: "30m"}) do
+  defp transform_realtime_labels(results, %Query{input_date_range: :realtime_30m}) do
     Enum.with_index(results)
     |> Enum.map(fn {entry, index} -> %{entry | date: -30 + index} end)
   end

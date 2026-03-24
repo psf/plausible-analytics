@@ -3,8 +3,6 @@ defmodule Plausible.Stats.Sampling do
   Sampling related functions
   """
   @default_sample_threshold 10_000_000
-  # 1 percent
-  @min_sample_rate 0.01
 
   import Ecto.Query
 
@@ -56,17 +54,25 @@ defmodule Plausible.Stats.Sampling do
   end
 
   defp decide_sample_rate(site, query) do
-    site.id
-    |> SamplingCache.get()
-    |> fractional_sample_rate(query)
+    if Plausible.Sites.consolidated?(site) and not Enum.empty?(query.consolidated_site_ids) do
+      query.consolidated_site_ids
+      |> SamplingCache.consolidated_get()
+      |> fractional_sample_rate(query)
+    else
+      site.id
+      |> SamplingCache.get()
+      |> fractional_sample_rate(query)
+    end
   end
 
-  def fractional_sample_rate(nil = _traffic_30_day, _query), do: :no_sampling
+  def fractional_sample_rate(nil = _traffic_30_day, _query),
+    do: :no_sampling
 
   def fractional_sample_rate(traffic_30_day, query) do
     date_range = Query.date_range(query)
     duration = Date.diff(date_range.last, date_range.first)
-    estimated_traffic = traffic_30_day / 30.0 * duration
+
+    estimated_traffic = estimate_traffic(traffic_30_day, duration, query)
 
     fraction =
       if(estimated_traffic > 0,
@@ -79,7 +85,21 @@ defmodule Plausible.Stats.Sampling do
       duration < 1 -> :no_sampling
       # If sampling doesn't have a significant effect, don't sample
       fraction > 0.4 -> :no_sampling
-      true -> max(fraction, @min_sample_rate)
+      true -> max(fraction, min_sample_rate())
     end
   end
+
+  defp min_sample_rate(), do: 0.013
+
+  defp estimate_traffic(traffic_30_day, duration, query) do
+    duration_adjusted_traffic = traffic_30_day / 30.0 * duration
+
+    estimate_by_filters(duration_adjusted_traffic, query.filters)
+  end
+
+  @filter_traffic_multiplier 1 / 4.0
+  @max_filters 2
+
+  defp estimate_by_filters(estimation, filters),
+    do: estimation * @filter_traffic_multiplier ** min(length(filters), @max_filters)
 end

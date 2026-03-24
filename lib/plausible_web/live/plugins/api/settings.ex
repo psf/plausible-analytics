@@ -11,12 +11,14 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
     socket =
       socket
       |> assign_new(:site, fn %{current_user: current_user} ->
-        Plausible.Sites.get_for_user!(current_user, domain, [
-          :owner,
-          :admin,
-          :editor,
-          :super_admin
-        ])
+        Plausible.Sites.get_for_user!(current_user, domain,
+          roles: [
+            :owner,
+            :admin,
+            :editor,
+            :super_admin
+          ]
+        )
       end)
       |> assign_new(:displayed_tokens, fn %{site: site} ->
         Tokens.list(site)
@@ -25,7 +27,7 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
     {:ok,
      assign(socket,
        domain: domain,
-       add_token?: not is_nil(session["new_token"]),
+       create_token?: not is_nil(session["new_token"]),
        token_description: session["new_token"] || ""
      )}
   end
@@ -35,7 +37,7 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
     <div>
       <.flash_messages flash={@flash} />
 
-      <%= if @add_token? do %>
+      <%= if @create_token? do %>
         {live_render(
           @socket,
           PlausibleWeb.Live.Plugins.API.TokenForm,
@@ -48,14 +50,29 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
         )}
       <% end %>
 
-      <div>
+      <%= if Enum.empty?(@displayed_tokens) do %>
+        <div class="flex flex-col items-center justify-center pt-5 pb-6 max-w-md mx-auto">
+          <h3 class="text-center text-base font-medium text-gray-900 dark:text-gray-100 leading-7">
+            Create your first plugin token
+          </h3>
+          <p class="text-center text-sm mt-1 text-gray-500 dark:text-gray-400 leading-5 text-pretty">
+            Control plugin access by creating tokens for third-party integrations.
+          </p>
+          <.button
+            phx-click="create-token"
+            class="mt-4"
+          >
+            New plugin token
+          </.button>
+        </div>
+      <% else %>
         <.filter_bar filtering_enabled?={false}>
-          <.button phx-click="add-token" mt?={false}>
-            Add Plugin Token
+          <.button phx-click="create-token" mt?={false}>
+            Create plugin token
           </.button>
         </.filter_bar>
 
-        <.table :if={not Enum.empty?(@displayed_tokens)} rows={@displayed_tokens}>
+        <.table rows={@displayed_tokens}>
           <:thead>
             <.th>Description</.th>
             <.th hide_on_mobile>Hint</.th>
@@ -84,26 +101,26 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
             </.td>
           </:tbody>
         </.table>
-      </div>
+      <% end %>
     </div>
     """
   end
 
-  def handle_event("add-token", _params, socket) do
-    {:noreply, assign(socket, :add_token?, true)}
+  def handle_event("create-token", _params, socket) do
+    {:noreply, assign(socket, :create_token?, true)}
   end
 
   def handle_event("revoke-token", %{"token-id" => token_id}, socket) do
     :ok = Tokens.delete(socket.assigns.site, token_id)
     displayed_tokens = Enum.reject(socket.assigns.displayed_tokens, &(&1.id == token_id))
-    {:noreply, assign(socket, add_token?: false, displayed_tokens: displayed_tokens)}
+    {:noreply, assign(socket, create_token?: false, displayed_tokens: displayed_tokens)}
   end
 
-  def handle_info(:cancel_add_token, socket) do
-    {:noreply, assign(socket, add_token?: false)}
+  def handle_info(:close_token_modal, socket) do
+    {:noreply, assign(socket, create_token?: false)}
   end
 
-  def handle_info({:token_added, token}, socket) do
+  def handle_info({:token_created, token}, socket) do
     displayed_tokens = [token | socket.assigns.displayed_tokens]
 
     socket = put_live_flash(socket, :success, "Plugins Token created successfully")
@@ -111,7 +128,6 @@ defmodule PlausibleWeb.Live.Plugins.API.Settings do
     {:noreply,
      assign(socket,
        displayed_tokens: displayed_tokens,
-       add_token?: false,
        token_description: ""
      )}
   end

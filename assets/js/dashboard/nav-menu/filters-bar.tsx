@@ -2,14 +2,13 @@ import { EllipsisHorizontalIcon } from '@heroicons/react/24/solid'
 import classNames from 'classnames'
 import React, { useRef, useState, useLayoutEffect } from 'react'
 import { AppliedFilterPillsList, PILL_X_GAP_PX } from './filter-pills-list'
-import { useQueryContext } from '../query-context'
+import { useDashboardStateContext } from '../dashboard-state-context'
 import { AppNavigationLink } from '../navigation/use-app-navigate'
 import { Popover, Transition } from '@headlessui/react'
-import { popover } from '../components/popover'
-import { BlurMenuButtonOnEscape } from '../keybinding'
+import { popover, BlurMenuButtonOnEscape } from '../components/popover'
 import { isSegmentFilter } from '../filtering/segments'
 import { useRoutelessModalsContext } from '../navigation/routeless-modals-context'
-import { DashboardQuery } from '../query'
+import { DashboardState } from '../dashboard-state'
 
 // Component structure is
 // `..[ filter (x) ]..[ filter (x) ]..[ three dot menu ]..`
@@ -109,23 +108,25 @@ interface FiltersBarProps {
 
 const canShowClearAllAction = ({
   filters
-}: Pick<DashboardQuery, 'filters'>): boolean => filters.length >= 2
+}: Pick<DashboardState, 'filters'>): boolean => filters.length >= 2
 
 const canShowSaveAsSegmentAction = ({
   filters,
   isEditingSegment
-}: Pick<DashboardQuery, 'filters'> & { isEditingSegment: boolean }): boolean =>
+}: Pick<DashboardState, 'filters'> & { isEditingSegment: boolean }): boolean =>
   filters.length >= 1 && !filters.some(isSegmentFilter) && !isEditingSegment
 
 export const FiltersBar = ({ accessors }: FiltersBarProps) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const pillsRef = useRef<HTMLDivElement>(null)
   const [visibility, setVisibility] = useState<null | VisibilityState>(null)
-  const { query, expandedSegment } = useQueryContext()
+  const { dashboardState, expandedSegment } = useDashboardStateContext()
 
-  const showingClearAll = canShowClearAllAction({ filters: query.filters })
+  const showingClearAll = canShowClearAllAction({
+    filters: dashboardState.filters
+  })
   const showingSaveAsSegment = canShowSaveAsSegmentAction({
-    filters: query.filters,
+    filters: dashboardState.filters,
     isEditingSegment: !!expandedSegment
   })
 
@@ -174,9 +175,9 @@ export const FiltersBar = ({ accessors }: FiltersBarProps) => {
     return () => {
       resizeObserver.disconnect()
     }
-  }, [accessors, query.filters, mustShowSeeMoreMenu])
+  }, [accessors, dashboardState.filters, mustShowSeeMoreMenu])
 
-  if (!query.filters.length) {
+  if (!dashboardState.filters.length) {
     // functions as spacer between elements.leftSection and elements.rightSection
     return <div className="w-4" />
   }
@@ -204,12 +205,12 @@ export const FiltersBar = ({ accessors }: FiltersBarProps) => {
         />
       </div>
       {visibility !== null &&
-        (query.filters.length !== visibility.visibleCount ||
+        (dashboardState.filters.length !== visibility.visibleCount ||
           mustShowSeeMoreMenu) && (
           <SeeMoreMenu
             actions={actionsInSeeMoreMenu}
             className="md:relative"
-            filtersCount={query.filters.length}
+            filtersCount={dashboardState.filters.length}
             visibleFiltersCount={visibility.visibleCount}
           />
         )}
@@ -266,18 +267,18 @@ const SeeMoreMenu = ({
             aria-hidden="true"
             className="absolute flex justify-end left-0 right-0 bottom-0 translate-y-1/4 pr-[3px]"
           >
-            <div className="text-[10px] leading-[10px] min-w-[10px] font-medium shadow px-[3px] py-[1px] flex items-center rounded-sm bg-gray-100 dark:bg-gray-850">
+            <div className="text-[10px] leading-[10px] min-w-[10px] font-medium shadow-sm px-[3px] py-[1px] flex items-center rounded-xs bg-gray-100 dark:bg-gray-850">
               +{filtersInMenuCount}
             </div>
           </div>
         )}
       </Popover.Button>
       <Transition
+        as="div"
         {...popover.transition.props}
         className={classNames(
-          'mt-2',
           popover.transition.classNames.fullwidth,
-          'md:right-auto'
+          'mt-2 md:right-auto md:origin-top-left'
         )}
       >
         <Popover.Panel
@@ -291,7 +292,7 @@ const SeeMoreMenu = ({
               <div className="py-4 px-4">
                 <AppliedFilterPillsList
                   direction="vertical"
-                  pillClassName="dark:!shadow-gray-950/60"
+                  pillClassName="!shadow-none !bg-gray-100 dark:!bg-gray-700"
                   slice={{
                     type: 'no-render-outside',
                     start: visibleFiltersCount
@@ -299,20 +300,17 @@ const SeeMoreMenu = ({
                 />
               </div>
               {showSomeActions && (
-                <div className="mb-1 border-gray-200 dark:border-gray-500 border-b"></div>
+                <div className="mb-1 border-gray-200 dark:border-gray-700 border-b"></div>
               )}
             </>
           )}
           {showSomeActions && (
             <div className="flex flex-col">
-              {actions.map((action, index) => {
+              {actions.map((action) => {
                 const linkClassName = classNames(
                   popover.items.classNames.navigationLink,
                   popover.items.classNames.selectedOption,
                   popover.items.classNames.hoverLink,
-                  index === 0 && !showMoreFilters
-                    ? popover.items.classNames.roundedStartEnd
-                    : popover.items.classNames.roundedEnd,
                   'whitespace-nowrap'
                 )
 

@@ -8,7 +8,7 @@ defmodule PlausibleWeb.BillingController do
 
   plug PlausibleWeb.RequireAccountPlug
 
-  plug Plausible.Plugs.AuthorizeTeamAccess, [:owner, :admin, :billing]
+  plug Plausible.Plugs.AuthorizeTeamAccess, [:owner, :billing]
 
   def ping_subscription(%Plug.Conn{} = conn, _params) do
     subscribed? = Plausible.Teams.Billing.has_active_subscription?(conn.assigns.current_team)
@@ -23,6 +23,8 @@ defmodule PlausibleWeb.BillingController do
       redirect(conn, to: Routes.billing_path(conn, :upgrade_to_enterprise_plan))
     else
       render(conn, "choose_plan.html",
+        live_module: PlausibleWeb.Live.ChoosePlan,
+        hide_header?: true,
         disable_global_notices?: true,
         skip_plausible_tracking: true,
         connect_live_socket: true
@@ -69,7 +71,7 @@ defmodule PlausibleWeb.BillingController do
   end
 
   def upgrade_success(conn, _params) do
-    render(conn, "upgrade_success.html")
+    render(conn, "upgrade_success.html", disable_global_notices?: true)
   end
 
   def change_plan_preview(conn, %{"plan_id" => new_plan_id}) do
