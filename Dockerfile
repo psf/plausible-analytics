@@ -68,7 +68,7 @@ ENV MIX_ENV=$MIX_ENV
 RUN adduser -S -H -u 999 -G nogroup plausible
 
 RUN apk upgrade --no-cache
-RUN apk add --no-cache openssl ncurses libstdc++ libgcc ca-certificates busybox-extras \
+RUN apk add --no-cache openssl ncurses libstdc++ libgcc ca-certificates \
   && if [ "$MIX_ENV" = "ce" ]; then apk add --no-cache certbot; fi
 
 COPY --from=buildcontainer --chmod=555 /app/_build/${MIX_ENV}/rel/plausible /app
